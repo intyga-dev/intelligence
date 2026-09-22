@@ -1,0 +1,13 @@
+node_modules
+src/generated
+.git
+.env
+.env.*
+!.env.example
+coverage
+dist
+*.md
+.turbo
+test/fixtures
+Dockerfile
+docker-compose.yml

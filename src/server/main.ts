@@ -1,0 +1,39 @@
+import "../loadenv.ts"
+import { config } from "../config.ts"
+import { disconnect } from "../store/client.ts"
+import { buildApp } from "./app.ts"
+
+// Entrypoint. Owns the socket and the shutdown sequence; buildApp() owns the routes, so tests can
+// drive the app with inject() without ever binding a port.
+
+const app = buildApp()
+
+async function shutdown(signal: string): Promise<void> {
+  app.log.info({ signal }, "shutting down")
+  try {
+    // Close the server first so in-flight requests finish before the database goes away —
+    // the reverse order turns a graceful deploy into a burst of 500s.
+    await app.close()
+    await disconnect()
+    process.exit(0)
+  } catch (err) {
+    app.log.error({ err: (err as Error).message }, "unclean shutdown")
+    process.exit(1)
+  }
+}
+
+for (const sig of ["SIGTERM", "SIGINT"] as const) {
+  process.on(sig, () => void shutdown(sig))
+}
+
+try {
+  // "::" so the container listens on both stacks; Fly and most orchestrators route over IPv6.
+  await app.listen({ port: config.port, host: "::" })
+  app.log.info(
+    { port: config.port, judgment: config.judgment.apiKey ? "configured" : "null-provider" },
+    "intelligence listening",
+  )
+} catch (err) {
+  app.log.error({ err: (err as Error).message }, "failed to start")
+  process.exit(1)
+}

@@ -1,0 +1,58 @@
+# Local development only. Deliberately a SEPARATE Postgres from Intyga's dev database (which runs on
+# 5433): this service owns its data and must never be able to reach Intyga's, not even locally where
+# it would be convenient. Port 5434 so both can run side by side.
+services:
+  postgres:
+    image: postgres:16
+    container_name: intelligence-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: intelligence
+      POSTGRES_PASSWORD: dev-local-only
+      POSTGRES_DB: intelligence_dev
+    ports:
+      - "5434:5432"
+    volumes:
+      - intelligence-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intelligence -d intelligence_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    container_name: intelligence-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # This compose file IS development, and it says so. The image defaults to NODE_ENV=production,
+      # where config.ts refuses the `dev-*-change-me` placeholders below — correctly, because a
+      # production deployment running on a published placeholder secret is the failure that guard
+      # exists to prevent. Declaring development here is the honest fix; loosening the guard so the
+      # local stack boots would disarm it everywhere.
+      NODE_ENV: development
+      # `postgres` is the compose service name — inside the network the port is 5432, not the 5434
+      # published on the host. Getting this wrong is the classic "works on the host, hangs in
+      # compose" failure.
+      DATABASE_URL: postgresql://intelligence:dev-local-only@postgres:5432/intelligence_dev
+      DIRECT_URL: postgresql://intelligence:dev-local-only@postgres:5432/intelligence_dev
+      PORT: "4100"
+      TICK_TOKEN: dev-tick-token-change-me
+      SECRETS_ENC_KEY: dev-secrets-enc-key-change-me-32b
+      # Unset on purpose: with no key the null judgment provider runs and nothing leaves the host.
+      # TYPESAFE_API_KEY: ""
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      - "4100:4100"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  intelligence-pgdata:

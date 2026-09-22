@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+src/generated/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.db
+*.sqlite
+.DS_Store
+*.tsbuildinfo
+
+# Private keys by every spelling this project actually uses. The quickstart tells you to keep the
+# platform RP key at ./rp.pk8, and *.pem/*.key above do not match it.
+*.pk8
+*.pkcs8
+*.jwk
+rp.*

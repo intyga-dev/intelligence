@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A pull request that is pushed to twice does not need the first run's answer.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The Prisma client is generated into src/generated/ and gitignored, so typecheck cannot run
+      # without it. No database is needed — generate reads the schema, not the server.
+      - run: pnpm db:generate
+
+      # typecheck, lint, boundary check, unit tests. Exactly what CONTRIBUTING tells contributors to
+      # run locally: one command, so there is no second set of checks to discover after review.
+      - run: pnpm verify
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Production dependencies only. A dev-only advisory is worth knowing about and is not a
+      # reason to fail a pull request that did not introduce it.
+      - run: pnpm audit --prod --audit-level high
