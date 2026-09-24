@@ -33,6 +33,9 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       TEST_DATABASE_URL: postgresql://intelligence:ci-only@localhost:5432/intelligence_test
+      # prisma.config.ts refuses to load without DIRECT_URL — even `prisma generate`, which never
+      # connects. A clean checkout has no .env, so without this the job failed at its first Prisma step.
+      DIRECT_URL: postgresql://intelligence:ci-only@localhost:5432/intelligence_test
     steps:
       - uses: actions/checkout@v4
 
@@ -46,13 +49,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # The Prisma client is generated into src/generated/ and gitignored, so typecheck cannot run
-      # without it. No database is needed — generate reads the schema, not the server.
+      # without it. No database connection is made — generate reads the schema, not the server.
       - run: pnpm db:generate
 
       - run: pnpm db:deploy
         env:
           DATABASE_URL: postgresql://intelligence:ci-only@localhost:5432/intelligence_test
-          DIRECT_URL: postgresql://intelligence:ci-only@localhost:5432/intelligence_test
 
       # typecheck, lint, boundary check, unit tests. Exactly what CONTRIBUTING tells contributors to
       # run locally: one command, so there is no second set of checks to discover after review.
