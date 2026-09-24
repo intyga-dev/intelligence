@@ -109,6 +109,21 @@ flowchart LR
   says so in its own comments — the design is the control, the script is the ratchet that makes
   breaking it deliberate.
 
+### First-time setup and enrolment
+
+These are the two moments when nobody can be asked for a passkey yet, so they are gated by
+something else:
+
+* **Binding a workspace** from the browser requires `SETUP_TOKEN` from the server's environment.
+  Until an instance is bound, the setup form is the only route it serves. With `SETUP_TOKEN` unset in
+  production, browser setup is off and `scripts/bind-workspace.ts` is the only way in.
+* **Enrolling a passkey** requires a **one-time invite link** — never just a subject id, which is
+  not a secret. Invites come from first-time setup, from an administrator's signed *Enrolment link*
+  action on `/members`, or from `scripts/invite-member.ts` for whoever holds the database
+  credential. They are 256-bit, single use, expire after 72 hours, are stored only as a SHA-256, and
+  travel in the URL fragment (`/members/enrol#invite=…`), so they never reach a server or proxy log.
+  Treat one like a password: whoever opens it first can add a passkey to that administrator.
+
 ---
 
 ## Supported connectors
@@ -120,37 +135,70 @@ Detectors never observe raw vendor APIs.
 | :--- | :--- | :--- |
 | **INTYGA** | `push` (webhook) | Authorization approvals, refusals, expiries and approval latency. |
 | **GitHub** | `poll` (API) | Pull requests with changed file paths, CI workflow outcomes, deploy runs. |
-| **Metrics** | `poll` (Prometheus) | Auth failures, rate limits, signature rejections, ledger health. |
+| **Metrics** | `poll` (Prometheus) | Samples of any PromQL query (defaults: INTYGA auth failures, rate limits, signature rejections, ledger health). Stored; not yet read by a detector. |
+| **Custom webhook** | `push` (signed JSON) | Anything you send it. `deployment`, `error` and `crash` events feed deploy-regression. |
 | **Sentry** | `push` (webhook) | Post-release exception spikes and regression indicators. |
 | **Vercel** | `push` (webhook) | Production and preview deployment lifecycles mapped to commit SHAs. |
 | **Fly.io** | `poll` (API) | Machine state changes, restarts and OOM kills. |
+| **GitLab** | `poll` (API, gitlab.com or self-managed) | Merge requests with changed paths, and deployments per environment. |
+| **PagerDuty** | `push` (webhook v3, signed) | Incidents triggered, acknowledged and resolved. |
+| **Opsgenie** | `push` (webhook, shared-secret header) | Alerts created and closed. Opsgenie itself shuts down on 5 April 2027. |
+| **Datadog** | `push` (webhook, shared-secret header) | Monitor alerts triggering and recovering. |
+| **Cloudflare Pages** | `poll` (API) | Finished Pages deployments mapped to commit SHAs. |
+| **Netlify** | `push` (deploy notifications, signed JWS) | Deploys that went live or failed, mapped to commit SHAs. |
+
+**Your own sources:** send signed JSON to the custom webhook with no code, or write a connector in one
+file. [docs/CONNECTORS.md](docs/CONNECTORS.md) covers both, with signing examples for bash, Node and
+Python, a GitHub Actions snippet, and the rules a connector has to follow.
 
 ---
 
 ## Deterministic detectors
 
-One detector ships in `0.1.0`:
+Three detectors ship. Each is a pure function over stored events, runs on every detection tick, and
+can be switched off on `/detectors`. Switching one off is a passkey-signed action. The severity and
+the reason a finding exists are always computed; the optional model can only adjust them afterwards.
 
-* **`denialBurst`** — detects statistically significant spikes in authorization refusals against an
-  actor's historical baseline, and flags action types never before seen from that subject.
-  ([source](src/domain/detectors/denialBurst.ts) ·
-  [tests](src/domain/detectors/denialBurst.test.ts))
+* **`denial-burst`** — a subject refused far more than it usually is, judged against its own
+  history, plus any action type it has never attempted before. *Needs:* the INTYGA connector.
+  ([source](src/domain/detectors/denialBurst.ts))
+* **`sensitive-code-change`** — a pull request touching security-sensitive code. Each GitHub
+  connector picks a **path map**:
+  * `generic` (the default) matches conventional names in any repository: auth, sessions,
+    permissions, crypto, secrets, migrations, infrastructure, CI. It is a heuristic and says so.
+  * `intyga-core` is a measured map for the INTYGA monorepo. It adds a **mirror rule**: code that
+    must change together across six language ports is flagged when a PR updates only some of them.
+    That rule is never applied to a truncated file list.
 
-Severity is assigned deterministically by [`src/domain/sensitivity.ts`](src/domain/sensitivity.ts)
-before any model is consulted.
+  Drafts and noise (lockfiles, docs, tests) are skipped. Each PR has one finding, updated on each
+  push. Works the same on GitLab merge requests. *Needs:* the GitHub or GitLab connector. ([source](src/domain/detectors/sensitiveChange.ts))
+* **`deploy-regression`** — errors (Sentry), machine crashes (Fly), incidents (PagerDuty,
+  Opsgenie, Datadog; one is enough) or the approval refusal rate (INTYGA) rising in the 30 minutes
+  after a successful production deploy (GitHub, GitLab, Vercel, Netlify, Cloudflare Pages, or a
+  custom event), compared with the 24 hours before. When the deployed commit matches a PR it has seen (head or merge commit), the
+  finding names the PR, and severity rises one step if that PR touched sensitive code.
+  This is timing, not proof of cause, and each finding says so.
+  *Needs:* a deploy source, plus at least one signal source.
+  ([source](src/domain/detectors/deployRegression.ts))
 
-**Not yet implemented.** Two further detectors are designed, and the ingestion they need is already
-in place, but there is no code for them. They are listed here as intent, not as features:
+Noise guards are part of each detector, not tuning left to you:
+* **Floors.** A minimum count before anything fires.
+* **Own baselines.** Each subject or service is judged against its own normal level.
+* **History.** A newly connected source does not make the next deploy look like a regression.
+* **Volume.** A refusal *rate* needs enough approvals to mean something.
 
-* `mirrorIncomplete` — partial updates to canonical multi-port interfaces across pull requests.
-* `postDeployRegression` — correlating deploy timestamps with a rise in exceptions or refusals.
+The Prometheus connector stores samples, but no detector reads them yet.
 
-Adding a detector touches `src/domain/detectors/` and one line of `src/jobs/tick.ts`. Failures are
-isolated per detector, so a new one cannot take the working ones down with it.
+Adding a detector: a pure function in `src/domain/detectors/`, an entry in
+`src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. Failures are isolated per
+detector, so a new one cannot take the working ones down with it.
 
 ---
 
 ## Quickstart
+
+*Local evaluation. For a real deployment — TLS, migrations, the tick scheduler, backups — follow
+[docs/PRODUCTION.md](docs/PRODUCTION.md) and start from [`.env.production.example`](.env.production.example).*
 
 ### Prerequisites
 
@@ -189,6 +237,9 @@ pnpm db:deploy
 pnpm exec tsx scripts/provision-tenant.ts default admin
 ```
 
+*(Alternatively skip steps 3–4 and complete setup in the browser at step 5: it asks for
+`SETUP_TOKEN` from your `.env`, then takes you straight to enrolling your passkey.)*
+
 ### 4. Bind your INTYGA workspace
 
 Intelligence uses INTYGA as its Relying Party identity and signing plane. Bind your tenant with your
@@ -205,6 +256,9 @@ pnpm exec tsx scripts/bind-workspace.ts \
 
 *(For a local gateway, use `--base-url http://localhost:8787`.)*
 
+It prints a **one-time enrolment link** for each administrator who has not enrolled yet. Keep it for
+step 6, and treat it like a password.
+
 ### 5. Start the application
 
 ```bash
@@ -215,9 +269,13 @@ Open **`http://localhost:4100`**.
 
 ### 6. Enrol your passkey and sign in
 
-1. Go to `http://localhost:4100/settings` and click **Test connection**.
-2. Visit `http://localhost:4100/members/enrol?id=admin` to register your hardware passkey.
-3. Sign in at `http://localhost:4100/login`.
+1. Open the enrolment link from step 4 and register your passkey. Lost it, or it expired?
+   `pnpm exec tsx scripts/invite-member.ts admin` issues a new one.
+2. Sign in at `http://localhost:4100/login`.
+3. Go to **Settings** and click **Test connection**.
+
+Further administrators are added on **Members**, which is a signed action and hands you their
+enrolment link once.
 
 ---
 
@@ -266,6 +324,35 @@ organisations on one instance; it says exactly what would have to be built first
 
 ---
 
+## Alerts
+
+Alert rules decide which findings are worth interrupting someone for. Findings are recorded
+either way.
+
+* **Channels:** a signed JSON **webhook**, or a **Slack incoming webhook**. Email is not available:
+  Intelligence has no mail sender.
+* **Created switched off.** Turning a rule on is a passkey-signed action that shows the approver
+  the destination host, and the host is part of what is signed. That is the moment finding data
+  starts leaving the host.
+* **What is sent:** each finding's id, title, severity, category, status, occurrence count and
+  timestamps, plus a link to the console. Never evidence, summaries or raw events. Titles can name
+  the subject involved.
+* **When:** on each detection tick, at most once per rule per cooldown, as one batch of up to 20
+  findings seen since the last successful delivery. Delivery is **at-least-once** — a failure is
+  retried on the next tick — so de-duplicate on finding `id` + `lastSeenAt`. Redirects are not
+  followed; HTTPS is required.
+* **Verifying a webhook.** Each delivery carries
+  `x-intelligence-signature: t=<unix seconds>,v1=<hex>`, where `v1` is HMAC-SHA256 of
+  `"<t>.<raw body>"` under the rule's signing secret (shown once when the rule is created). Verify
+  against the raw bytes before parsing, compare in constant time, and reject old timestamps:
+
+  ```ts
+  const [, t, v1] = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(header) ?? []
+  const want = createHmac("sha256", secret).update(`${t}.${rawBody}`).digest("hex")
+  const ok = v1 !== undefined && timingSafeEqual(Buffer.from(v1), Buffer.from(want))
+    && Math.abs(Date.now() / 1000 - Number(t)) < 300
+  ```
+
 ## The optional judgment layer
 
 Intelligence can send a **projected, identifier-free view** of a finding to a third-party model to
@@ -294,6 +381,7 @@ and turning it on requires an administrator passkey signature.
 | `DATABASE_URL` | PostgreSQL connection string. | Required |
 | `DIRECT_URL` | Direct connection string for Prisma migrations (bypasses any pooler). | Required |
 | `TICK_TOKEN` | Bearer token protecting `POST /internal/tick`. | Required in production |
+| `SETUP_TOKEN` | Required to complete first-time setup in the browser. Unset in production ⇒ browser setup disabled; use `scripts/bind-workspace.ts`. | Dev placeholder |
 | `SECRETS_ENC_KEY` | 32-byte base64 key encrypting connection credentials at rest. | Required in production |
 | `INTYGA_RP_URL` | INTYGA gateway base URL. Unset means privileged actions are refused. | None |
 | `INTYGA_RP_CLIENT_ID` | Platform-scoped client ID. | None |
@@ -313,14 +401,15 @@ The `JEV_API_KEY`, `JEV_MODEL` and `JEV_ENDPOINT` names are the earlier spelling
 for compatibility. Set one family, not both — the `TYPESAFE_*` name wins silently.
 
 In production (`NODE_ENV` anything but `development` or `test`) a missing or still-placeholder
-`TICK_TOKEN` or `SECRETS_ENC_KEY` **throws at startup** rather than running on a dev default.
+`TICK_TOKEN` or `SECRETS_ENC_KEY` **throws at startup** rather than running on a dev default. A
+placeholder `SETUP_TOKEN` is refused when setup is attempted.
 
 ---
 
 ## Verification
 
 ```bash
-pnpm verify   # typecheck, lint, boundary check, unit tests
+pnpm verify   # typecheck, lint, boundary check, unit tests (DB-backed tests need TEST_DATABASE_URL — see CONTRIBUTING)
 ```
 
 To simulate an end-to-end event burst and watch findings appear:

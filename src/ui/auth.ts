@@ -109,18 +109,24 @@ form.addEventListener("submit", async (e) => {
   })
 }
 
-export function enrolPage(o: { externalId: string; error?: string }): string {
+/**
+ * Passkey enrolment, from an administrator's one-time link.
+ *
+ * Takes no parameters. The invite is in the URL fragment (`#invite=…`), which the browser never
+ * sends to the server; this page reads it and posts it in a request body. Who is being enrolled is
+ * decided server-side from the invite and shown here only once the ceremony has begun.
+ */
+export function enrolPage(): string {
   return authPage({
     title: "Enrol a passkey",
     lede: "One passkey on this domain. It signs you in here and approves changes.",
-    ...(o.error ? { error: o.error } : {}),
     footnote:
       "This credential is registered against Intelligence's own Relying Party — it cannot approve anything in INTYGA itself.",
     body: `
 <div class="field">
-  <label>Subject</label>
+  <label>Enrolling</label>
   <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:9px 11px">
-    <code>${esc(o.externalId)}</code>
+    <code id="who">from your enrolment link</code>
   </div>
 </div>
 <button class="primary" id="go">Enrol passkey</button>
@@ -130,13 +136,22 @@ export function enrolPage(o: { externalId: string; error?: string }): string {
 ${B64}
 const go = document.getElementById("go");
 const msg = document.getElementById("msg");
-const externalId = ${JSON.stringify(o.externalId)};
+const invite = new URLSearchParams(location.hash.slice(1)).get("invite") || "";
+let externalId = "";
+// Drop the token from the address bar and history now that it is held in memory.
+if (invite) history.replaceState(null, "", location.pathname);
 
 function fail(text) {
   msg.textContent = text;
   msg.style.color = "var(--red)";
   go.disabled = false;
   go.textContent = "Enrol passkey";
+}
+
+if (!invite) {
+  go.disabled = true;
+  msg.textContent = "Open the enrolment link an administrator sent you. This page does nothing without one.";
+  msg.style.color = "var(--red)";
 }
 
 go.addEventListener("click", async () => {
@@ -147,10 +162,12 @@ go.addEventListener("click", async () => {
   try {
     const begin = await fetch("/members/enrol/begin", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ externalId }),
+      body: JSON.stringify({ invite }),
     });
     const b = await begin.json();
     if (!begin.ok) throw new Error(b.error || "could not start enrolment");
+    externalId = b.externalId;
+    document.getElementById("who").textContent = b.label + " (" + b.externalId + ")";
 
     go.textContent = "Follow your device's prompt…";
     const o = unwrapOptions(b.options);
@@ -166,7 +183,7 @@ go.addEventListener("click", async () => {
     const done = await fetch("/members/enrol/complete", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        externalId,
+        invite,
         response: {
           id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
           response: {

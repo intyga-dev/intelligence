@@ -2,14 +2,14 @@ import { type GateIntent, intentDigest } from "../gate/intent.ts"
 import {
   completeChallenge,
   type GateConfig,
-  GateRefused,
+  GateError,
   openChallenge,
   resolveGateConfig,
   type TenantRpBinding,
 } from "../gate/rp.ts"
 import { prisma } from "../store/client.ts"
 import { decryptSecret } from "../store/crypto.ts"
-import { actionDef } from "./registry.ts"
+import { type ActionOutcome, actionDef } from "./registry.ts"
 
 // The two halves of a privileged action, and the state that survives between them.
 //
@@ -114,7 +114,7 @@ export async function completeAction(input: {
   tenantId: string
   nonce: string
   assertion: unknown
-}): Promise<{ applied: true }> {
+}): Promise<{ applied: true } & ActionOutcome> {
   // Claimed atomically: a pending action moves out of AWAITING_SIGNATURE in the same statement that
   // selects it, so two concurrent completions cannot both execute one approval.
   const claimed = await prisma.pendingAction.updateMany({
@@ -132,10 +132,13 @@ export async function completeAction(input: {
   const def = actionDef(pending.action)
   if (!def) throw new ActionError(`unknown action: ${pending.action}`)
 
-  const fail = async (reason: string, status: "REFUSED" = "REFUSED"): Promise<never> => {
+  // `reason` is authored and goes back to the approver. `detail` may be raw exception text — an
+  // upstream URL, a column name — so it is recorded on the row for the operator and never returned.
+  const fail = async (reason: string, detail?: string): Promise<never> => {
+    const error = detail ? `${reason}: ${detail}` : reason
     await prisma.pendingAction.update({
       where: { nonce: input.nonce },
-      data: { status, error: reason.slice(0, 500), appliedAt: null },
+      data: { status: "REFUSED", error: error.slice(0, 500), appliedAt: null },
     })
     throw new ActionError(reason)
   }
@@ -152,7 +155,10 @@ export async function completeAction(input: {
   try {
     cfg = resolveGateConfig(await tenantBinding(input.tenantId))
   } catch (err) {
-    return await fail((err as Error).message)
+    return await fail(
+      err instanceof GateError ? err.message : "the Intyga binding is not usable",
+      (err as Error).message,
+    )
   }
 
   try {
@@ -162,18 +168,21 @@ export async function completeAction(input: {
       input.assertion,
     )
   } catch (err) {
+    // GateError messages are authored in rp.ts (status codes, never response bodies).
     return await fail(
-      err instanceof GateRefused ? err.message : `signature could not be verified: ${(err as Error).message}`,
+      err instanceof GateError ? err.message : "signature could not be verified",
+      (err as Error).message,
     )
   }
 
+  let outcome: ActionOutcome | undefined
   try {
-    await def.run(input.tenantId, pending.params, { nonce: pending.nonce })
+    outcome = (await def.run(input.tenantId, pending.params, { nonce: pending.nonce })) ?? undefined
   } catch (err) {
     // The signature was valid; the action itself failed. Recorded distinctly, because "refused" and
     // "approved but broke" are different incidents.
-    return await fail(`action failed after approval: ${(err as Error).message}`)
+    return await fail("the action failed after approval", (err as Error).message)
   }
 
-  return { applied: true }
+  return { applied: true, ...(outcome ?? {}) }
 }

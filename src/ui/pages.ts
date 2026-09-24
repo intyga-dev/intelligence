@@ -27,7 +27,21 @@ function actionBtn(o: {
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────────────────────────
 
-export function onboardingPage(o: { error?: string } = {}): string {
+export function onboardingPage(o: { error?: string; setupEnabled?: boolean } = {}): string {
+  if (o.setupEnabled === false) {
+    return authPage({
+      title: "Connect your INTYGA workspace",
+      lede: "This instance is not connected to an INTYGA workspace yet.",
+      ...(o.error ? { error: o.error } : {}),
+      footnote: "Browser setup is off because SETUP_TOKEN is not set on the server.",
+      body: `
+<p>
+  Browser setup is disabled on this server. Whoever operates it can either set
+  <code>SETUP_TOKEN</code> and restart, then complete setup here, or bind the workspace from the
+  command line with <code>scripts/bind-workspace.ts</code>.
+</p>`,
+    })
+  }
   return authPage({
     title: "Connect your INTYGA workspace",
     lede: "Intelligence is an add-on to INTYGA. It runs on the workspace you connect here.",
@@ -37,6 +51,16 @@ export function onboardingPage(o: { error?: string } = {}): string {
       "Nothing is watched until you switch a connector on. Connecting only establishes who may sign in.",
     body: `
 <form method="post" action="/settings/bind">
+  <div class="authSection">
+    <h2>Setup token</h2>
+    <p>
+      The <code>SETUP_TOKEN</code> value from this server's environment. It proves you operate this
+      instance — without it, whoever found a fresh deployment first could claim it.
+    </p>
+    <div class="field"><label>Setup token</label>
+      <input name="setupToken" type="password" required autocomplete="off"></div>
+  </div>
+
   <div class="authSection">
     <h2>Workspace</h2>
     <p>
@@ -70,8 +94,8 @@ export function onboardingPage(o: { error?: string } = {}): string {
   <div class="authSection">
     <h2>First administrator</h2>
     <p>
-      Without one, nothing here could ever be approved — including adding one. They enrol a passkey
-      after this.
+      Without one, nothing here could ever be approved — including adding one. Usually you: the next
+      page enrols their passkey on this device.
     </p>
     <div class="grid g2">
       <div class="field"><label>INTYGA subject id</label>
@@ -251,7 +275,7 @@ document.addEventListener("click", async (e) => {
   try {
     const r = await fetch("/api/findings/" + b.dataset.fb + "/feedback", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ actor: "console", verdict: b.dataset.v }),
+      body: JSON.stringify({ verdict: b.dataset.v }),
     });
     if (!r.ok) throw new Error();
     location.reload();
@@ -380,6 +404,10 @@ export interface AvailableConnector {
     required?: boolean
     secret?: boolean
   }[]
+  /** True when Intelligence mints the secret itself — the form then has nothing else to ask for. */
+  generatesSecret: boolean
+  /** The steps shown after creation, previewed here so nobody creates a connector blind. */
+  setup: string[]
   installed: boolean
   builtIn: boolean
 }
@@ -502,6 +530,16 @@ ${o.rows
                 </div>`,
               )
               .join("")}
+            ${
+              a.generatesSecret
+                ? `<p class="mut" style="font-size:12.5px;margin:4px 0 10px">Nothing else to fill in: Intelligence
+                generates this connector's signing secret and shows it once, with the endpoint URL, on the
+                next page.</p>`
+                : ""
+            }
+            <details style="font-size:12.5px"><summary class="mut">What you will set up in ${esc(a.label)}</summary>
+              <ol style="margin:8px 0 0;padding-left:18px">${a.setup.map((s) => `<li class="mut">${esc(s)}</li>`).join("")}</ol>
+            </details>
           </div>
           <div class="foot">
             <button class="ghost" type="button" onclick="this.closest('dialog').close()">Cancel</button>
@@ -519,7 +557,7 @@ ${o.rows
 // ─── Detectors, Alerts, Judgment, Members, Settings ──────────────────────────────────────────────
 
 export function detectorsPage(o: {
-  rows: { detector: string; enabled: boolean; description: string; settings: string }[]
+  rows: { detector: string; enabled: boolean; description: string; settings: string; needs: string }[]
   counts: { findings: number; alerts: number; connectors: number }
   /** Who is signed in — rendered in the sidebar with the sign-out link. */
   actor?: { label: string; externalId: string }
@@ -531,14 +569,29 @@ export function detectorsPage(o: {
     counts: o.counts,
     ...(o.actor ? { actor: o.actor } : {}),
     body: `<div class="card"><table>
-<thead><tr><th>Detector</th><th>What it finds</th><th>Thresholds</th><th style="width:86px">State</th></tr></thead>
+<thead><tr><th>Detector</th><th>What it finds</th><th>Thresholds</th><th style="width:170px">State</th></tr></thead>
 <tbody>${o.rows
       .map(
-        (d) => `<tr><td><b>${esc(d.detector)}</b></td><td class="mut">${esc(d.description)}</td>
+        (
+          d,
+        ) => `<tr><td><b>${esc(d.detector)}</b><div class="mut" style="font-size:11.5px">needs: ${esc(d.needs)}</div></td>
+      <td class="mut">${esc(d.description)}</td>
       <td><code>${esc(d.settings)}</code></td>
-      <td><span class="badge ${d.enabled ? "on" : "off"}">${d.enabled ? "on" : "off"}</span></td></tr>`,
+      <td><span class="badge ${d.enabled ? "on" : "off"}">${d.enabled ? "on" : "off"}</span> ${actionBtn(
+        d.enabled
+          ? {
+              label: "Turn off",
+              action: "intelligence.detector.disable",
+              params: { detector: d.detector },
+              cls: "danger",
+            }
+          : { label: "Turn on", action: "intelligence.detector.enable", params: { detector: d.detector } },
+      )}</td></tr>`,
       )
-      .join("")}</tbody></table></div>`,
+      .join("")}</tbody></table>
+  <p class="mut" style="font-size:12px;margin:12px 0 0">
+    A detector with none of the sources it needs connected simply finds nothing. The code-change
+    detector's path map is set per GitHub connector (<code>generic</code> or <code>intyga-core</code>).</p></div>`,
   })
 }
 
@@ -548,14 +601,37 @@ export function alertsPage(o: {
     name: string
     minSeverity: string
     channel: string
+    targetHost: string
     cooldownMinutes: number
     active: boolean
     lastFiredAt: Date | null
+    lastError: string | null
+    /** False for a rule created before delivery existed: no signing secret, cannot be turned on. */
+    deliverable: boolean
   }[]
   counts: { findings: number; alerts: number; connectors: number }
   /** Who is signed in — rendered in the sidebar with the sign-out link. */
   actor?: { label: string; externalId: string }
+  /** A form error, shown above the form. Authored text only. */
+  error?: string
 }): string {
+  const state = (r: (typeof o.rules)[number]): string => {
+    if (!r.deliverable) return `<span class="mut">recreate to use</span>`
+    // Turning ON is signed and binds the destination host; turning OFF is signed so the record of
+    // who stopped the flow is as good as the record of who started it.
+    return r.active
+      ? `<span class="badge on">on</span> ${actionBtn({
+          label: "Turn off",
+          action: "intelligence.alert.deactivate",
+          params: { ruleId: r.id },
+        })}`
+      : `<span class="badge">off</span> ${actionBtn({
+          label: "Turn on",
+          action: "intelligence.alert.activate",
+          params: { ruleId: r.id, host: r.targetHost },
+          cls: "primary",
+        })}`
+  }
   return page({
     title: "Alerts",
     lede: "Findings are recorded whatever you do here. Alerts decide which ones are worth interrupting someone for.",
@@ -568,16 +644,25 @@ export function alertsPage(o: {
   ${
     o.rules.length === 0
       ? `<div class="empty" style="margin-top:11px">No alert rules. Findings are still recorded and visible here.</div>`
-      : `<table style="margin-top:9px"><thead><tr><th>Name</th><th>Fires at</th><th>Channel</th><th>Cooldown</th><th>Last fired</th></tr></thead>
+      : `<table style="margin-top:9px"><thead><tr><th>Name</th><th>Fires at</th><th>Destination</th><th>Cooldown</th><th>Last delivered</th><th style="width:170px"></th></tr></thead>
     <tbody>${o.rules
       .map(
         (r) => `<tr><td><b>${esc(r.name)}</b></td><td>${badge(r.minSeverity)} and above</td>
-        <td>${esc(r.channel)}</td><td class="mut">${r.cooldownMinutes}m</td>
-        <td class="mut">${r.lastFiredAt ? ago(r.lastFiredAt) : "never"}</td></tr>`,
+        <td>${esc(r.channel)} · <code>${esc(r.targetHost || "—")}</code></td><td class="mut">${r.cooldownMinutes}m</td>
+        <td class="mut">${r.lastFiredAt ? ago(r.lastFiredAt) : "never"}${
+          r.lastError
+            ? `<div style="color:var(--red);font-size:12px">last attempt: ${esc(r.lastError)}</div>`
+            : ""
+        }</td><td>${state(r)}</td></tr>`,
       )
       .join("")}</tbody></table>`
   }
+  <p class="mut" style="font-size:12px;margin:12px 0 0">
+    Delivered on each detection tick, at most once per cooldown, in one batch. What is sent: each
+    finding's id, title, severity, category, status, count and timestamps, plus a link back here —
+    never evidence or raw events. Titles can name the subject involved.</p>
 </div>
+${o.error ? `<div class="card" style="border-color:var(--red);color:var(--red)">${esc(o.error)}</div>` : ""}
 <form class="card" method="post" action="/alerts/create">
   <h2>New rule</h2>
   <div class="grid g2">
@@ -586,13 +671,51 @@ export function alertsPage(o: {
       <option value="critical">critical</option><option value="high" selected>high</option>
       <option value="medium">medium</option><option value="low">low</option><option value="info">info</option></select></div>
     <div class="field"><label>Channel</label><select name="channel">
-      <option value="webhook">webhook</option><option value="slack">slack</option><option value="email">email</option></select></div>
+      <option value="webhook">webhook — signed JSON</option><option value="slack">Slack incoming webhook</option></select></div>
     <div class="field"><label>Cooldown (minutes)</label><input name="cooldownMinutes" type="number" value="60" min="0"></div>
   </div>
-  <div class="field"><label>Destination</label><input name="target" required placeholder="https://hooks.example.com/…">
-    <div class="mut" style="font-size:12px;margin-top:4px">Stored encrypted — a webhook URL is a credential.</div></div>
+  <div class="field"><label>Destination (https)</label><input name="target" required placeholder="https://hooks.example.com/…">
+    <div class="mut" style="font-size:12px;margin-top:4px">Stored encrypted — a webhook URL is a credential.
+    The rule is created switched off; turning it on needs a passkey approval.</div></div>
   <button class="primary" type="submit">Create rule</button>
 </form>`,
+  })
+}
+
+export function alertCreatedPage(o: {
+  name: string
+  channel: string
+  host: string
+  signingSecret: string
+  counts: { findings: number; alerts: number; connectors: number }
+  actor?: { label: string; externalId: string }
+}): string {
+  return page({
+    title: `${o.name} created`,
+    lede: `Created and switched off. Nothing is sent to ${o.host} until you turn it on.`,
+    path: "/alerts",
+    counts: o.counts,
+    ...(o.actor ? { actor: o.actor } : {}),
+    body: `
+${
+  o.channel === "webhook"
+    ? `<div class="card" style="border-color:var(--amber)">
+  <h2>Signing secret — shown once</h2>
+  <p class="mut" style="font-size:13px;margin-top:0">
+    Every delivery carries <code>x-intelligence-signature: t=&lt;unix&gt;,v1=&lt;hex&gt;</code>, an
+    HMAC-SHA256 of <code>&lt;t&gt;.&lt;raw body&gt;</code> under this secret. Verify it against the raw
+    bytes before parsing, and refuse old timestamps. It is stored encrypted and cannot be shown again.</p>
+  <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:12px">
+    <code style="font-size:13px">${esc(o.signingSecret)}</code></div>
+</div>`
+    : ""
+}
+<div class="card">
+  <div class="row">
+    <a class="btn primary" href="/alerts">Back to alerts</a>
+    <span class="mut" style="font-size:12px">Turn it on there once the receiver is ready.</span>
+  </div>
+</div>`,
   })
 }
 
@@ -780,23 +903,27 @@ export function membersPage(o: {
     ...(o.actor ? { actor: o.actor } : {}),
     body: `
 <div class="card"><table>
-<thead><tr><th>Member</th><th>INTYGA subject</th><th>Passkey</th><th style="width:150px"></th></tr></thead>
+<thead><tr><th>Member</th><th>INTYGA subject</th><th>Passkey</th><th style="width:280px"></th></tr></thead>
 <tbody>${o.rows
       .map(
         (m) => `<tr><td><b>${esc(m.label)}</b></td><td><code>${esc(m.externalId)}</code></td>
     <td>${
-      m.enrolledAt
-        ? `<span class="badge on">enrolled</span>`
-        : `<span class="badge">not enrolled</span> <a href="/members/enrol?id=${encodeURIComponent(m.externalId)}">enrol →</a>`
+      m.enrolledAt ? `<span class="badge on">enrolled</span>` : `<span class="badge">not enrolled</span>`
     }</td>
     <td>${
       m.active
-        ? actionBtn({
+        ? // Enrolment is by one-time link only, and issuing one is signed: the link is the power to
+          // add a passkey to this member. Also how a member adds a second device or recovers one.
+          `${actionBtn({
+            label: "Enrolment link",
+            action: "intelligence.member.invite",
+            params: { externalId: m.externalId },
+          })} ${actionBtn({
             label: "Remove",
             action: "intelligence.member.remove",
             params: { externalId: m.externalId },
             cls: "danger",
-          })
+          })}`
         : `<span class="mut">removed</span>`
     }</td></tr>`,
       )

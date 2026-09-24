@@ -138,7 +138,7 @@ document.addEventListener("click", async (e) => {
   try {
     const r = await fetch("/api/findings/" + b.dataset.id + "/feedback", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ actor: "console", verdict: b.dataset.v }),
+      body: JSON.stringify({ verdict: b.dataset.v }),
     });
     if (r.ok) location.reload(); else throw new Error();
   } catch { [...row.querySelectorAll("button")].forEach(x => x.disabled = false); }

@@ -5,6 +5,7 @@ src/generated/
 .env
 .env.*
 !.env.example
+!.env.production.example
 *.pem
 *.key
 *.p12
@@ -18,4 +19,6 @@ src/generated/
 *.pk8
 *.pkcs8
 *.jwk
-rp.*
+# ROOT-ANCHORED on purpose. The unanchored `rp.*` also matched src/gate/rp.ts — the module that runs
+# every approval ceremony — so it was never committed and a fresh clone did not compile.
+/rp.*

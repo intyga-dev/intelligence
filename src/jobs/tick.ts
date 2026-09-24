@@ -1,10 +1,32 @@
+import { type DeliveryReport, deliverAlerts } from "../alerts/deliver.ts"
 import { connectorFor, isPoll } from "../connectors/index.ts"
 import type { ConnectorContext } from "../connectors/registry.ts"
 import { detectDenialBursts } from "../domain/detectors/denialBurst.ts"
+import {
+  asDeploy,
+  DEFAULT_REGRESSION_CONFIG,
+  DEPLOY_KINDS,
+  type Deploy,
+  detectDeployRegressions,
+} from "../domain/detectors/deployRegression.ts"
+import type { DetectorId } from "../domain/detectors/index.ts"
+import { detectSensitiveChanges, SENSITIVE_PR_KINDS } from "../domain/detectors/sensitiveChange.ts"
+import type { Finding } from "../domain/finding.ts"
+import { type PathMap, pathMapFor } from "../domain/sensitivity.ts"
 import { evaluateFindingWithJudgment } from "../domain/judgment.ts"
 import { prisma } from "../store/client.ts"
 import { decryptSecret } from "../store/crypto.ts"
-import { getCursor, loadEvents, saveEvent, setCursor, upsertFinding } from "../store/repo.ts"
+import {
+  disabledDetectors,
+  getCursor,
+  getDetectorCursor,
+  loadEvents,
+  loadIngestedEvents,
+  saveEvent,
+  setCursor,
+  setDetectorCursor,
+  upsertFinding,
+} from "../store/repo.ts"
 
 // One tick: run every deterministic detector over its window and fold the results into findings.
 //
@@ -22,6 +44,7 @@ export interface TickReport {
   tenants: number
   polled: Record<string, { fetched: number; stored: number } | { error: true }>
   detectors: Record<string, { found: number; created: number } | { error: true }>
+  alerts: DeliveryReport | { error: true }
   durationMs: number
 }
 
@@ -71,6 +94,30 @@ async function pollConnectors(): Promise<TickReport["polled"]> {
   return report
 }
 
+/** How far back a deploy's shipped pull request may have been observed. */
+const CHANGE_LOOKBACK_MS = 30 * 24 * 60 * 60_000
+
+/** Fold findings into the store; returns how many were new. Judgment is best-effort, never gating. */
+async function persist(tenantId: string, found: Finding[]): Promise<number> {
+  let created = 0
+  for (const f of found) {
+    const r = await upsertFinding(f)
+    if (r.isNew) created++
+    await evaluateFindingWithJudgment(tenantId, r.id).catch(() => {})
+  }
+  return created
+}
+
+/** Each code-host connection's configured component map (GitHub and GitLab). */
+async function pathMaps(tenantId: string): Promise<(connectionId: string) => PathMap> {
+  const rows = await prisma.connection.findMany({
+    where: { tenantId, kind: { in: ["github", "gitlab"] } },
+    select: { id: true, config: true },
+  })
+  const byId = new Map(rows.map((r) => [r.id, pathMapFor((r.config as Record<string, unknown>)?.pathMap)]))
+  return (id) => byId.get(id) ?? pathMapFor(undefined)
+}
+
 export async function runDetectors(now = new Date()): Promise<TickReport> {
   const started = Date.now()
   // Pull first, so this tick's detection sees this tick's events rather than lagging one behind.
@@ -78,28 +125,102 @@ export async function runDetectors(now = new Date()): Promise<TickReport> {
   const tenants = await prisma.tenant.findMany({ select: { id: true } })
   const detectors: TickReport["detectors"] = {}
 
-  for (const { id: tenantId } of tenants) {
+  /** Run one detector for one tenant, isolated: a throw marks it failed and touches nothing else. */
+  const run = async (id: DetectorId, body: () => Promise<{ found: number; created: number }>) => {
     try {
-      const events = await loadEvents(tenantId, {
-        kinds: ["challenge.denied", "challenge.expired"],
-        since: new Date(now.getTime() - LOOKBACK_MS),
-      })
-      const found = detectDenialBursts({ tenantId, events, now })
-      let created = 0
-      for (const f of found) {
-        const r = await upsertFinding(f)
-        if (r.isNew) created++
-        await evaluateFindingWithJudgment(tenantId, r.id).catch(() => {})
-      }
-      const prev = detectors["denial-burst"]
-      const base = prev && !("error" in prev) ? prev : { found: 0, created: 0 }
-      detectors["denial-burst"] = { found: base.found + found.length, created: base.created + created }
+      const r = await body()
+      const prev = detectors[id]
+      if (prev && "error" in prev) return
+      detectors[id] = { found: (prev?.found ?? 0) + r.found, created: (prev?.created ?? 0) + r.created }
     } catch {
       // Detail goes to the caller's log, not into the response body: the response is retained by
       // whatever external scheduler drives this, and that is a third party.
-      detectors["denial-burst"] = { error: true }
+      detectors[id] = { error: true }
     }
   }
 
-  return { tenants: tenants.length, polled, detectors, durationMs: Date.now() - started }
+  for (const { id: tenantId } of tenants) {
+    const off = await disabledDetectors(tenantId)
+    const mapFor = await pathMaps(tenantId)
+
+    // Switched off means NOT WATCHED, not deferred: the event-driven detectors' marks keep moving,
+    // so switching one back on does not replay everything that happened while it was off.
+    for (const id of ["sensitive-code-change", "deploy-regression"] as const) {
+      if (off.has(id)) await setDetectorCursor(tenantId, id, now)
+    }
+
+    if (!off.has("denial-burst")) {
+      await run("denial-burst", async () => {
+        const events = await loadEvents(tenantId, {
+          kinds: ["challenge.denied", "challenge.expired"],
+          since: new Date(now.getTime() - LOOKBACK_MS),
+        })
+        const found = detectDenialBursts({ tenantId, events, now })
+        return { found: found.length, created: await persist(tenantId, found) }
+      })
+    }
+
+    if (!off.has("sensitive-code-change")) {
+      await run("sensitive-code-change", async () => {
+        const after =
+          (await getDetectorCursor(tenantId, "sensitive-code-change")) ??
+          new Date(now.getTime() - LOOKBACK_MS)
+        const events = await loadIngestedEvents(tenantId, { kinds: SENSITIVE_PR_KINDS, after, until: now })
+        const found = detectSensitiveChanges({ tenantId, events, now, mapFor })
+        const created = await persist(tenantId, found)
+        // Moved only after the findings are stored: a crash before this re-reads the batch, which
+        // folds into the same findings rather than losing them.
+        await setDetectorCursor(tenantId, "sensitive-code-change", now)
+        return { found: found.length, created }
+      })
+    }
+
+    if (!off.has("deploy-regression")) {
+      await run("deploy-regression", async () => {
+        const cfg = DEFAULT_REGRESSION_CONFIG
+        const mark =
+          (await getDetectorCursor(tenantId, "deploy-regression")) ?? new Date(now.getTime() - cfg.baselineMs)
+        // A deploy is evaluated once its post window has CLOSED: those in (mark − post, now − post].
+        const from = mark.getTime() - cfg.postMs
+        const to = now.getTime() - cfg.postMs
+        const deploys = (
+          await loadEvents(tenantId, { kinds: DEPLOY_KINDS, since: new Date(from), until: new Date(to) })
+        )
+          .filter((e) => e.at.getTime() > from)
+          .map(asDeploy)
+          .filter((d): d is Deploy => d !== null)
+
+        let found: Finding[] = []
+        if (deploys.length > 0) {
+          const times = deploys.map((d) => d.event.at.getTime())
+          const earliest = Math.min(...times)
+          const latest = Math.max(...times)
+          const signals = await loadEvents(tenantId, {
+            since: new Date(earliest - cfg.baselineMs),
+            until: new Date(latest + cfg.postMs),
+          })
+          const changes = await loadEvents(tenantId, {
+            kinds: [...SENSITIVE_PR_KINDS],
+            since: new Date(earliest - CHANGE_LOOKBACK_MS),
+            until: new Date(latest),
+          })
+          found = detectDeployRegressions({ tenantId, deploys, signals, changes, mapFor, now })
+        }
+        const created = await persist(tenantId, found)
+        await setDetectorCursor(tenantId, "deploy-regression", now)
+        return { found: found.length, created }
+      })
+    }
+  }
+
+  // Last, so this tick's findings go out on this tick rather than the next. Isolated like the
+  // detectors: a delivery failure must never read as a detection failure, or the reverse.
+  let alerts: TickReport["alerts"]
+  try {
+    alerts = await deliverAlerts(now)
+  } catch {
+    alerts = { error: true }
+  }
+
+  return { tenants: tenants.length, polled, detectors, alerts, durationMs: Date.now() - started }
 }

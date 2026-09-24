@@ -5,7 +5,7 @@
 // being to see whether the thresholds produce a list worth reading before wiring it to findings.
 
 import "../src/loadenv.ts"
-import { classifyChangedPaths } from "../src/domain/sensitivity.ts"
+import { classifyChangedPaths, pathMapFor } from "../src/domain/sensitivity.ts"
 import { prisma } from "../src/store/client.ts"
 
 const rows = await prisma.event.findMany({
@@ -20,7 +20,11 @@ for (const r of rows) {
   const paths: string[] = JSON.parse(String(a.paths ?? "[]"))
   if (paths.length === 0) continue
 
-  const res = classifyChangedPaths(paths, { truncated: Boolean(a.pathsTruncated) })
+  // PATH_MAP selects the map, as the connection's `pathMap` setting does: generic unless told otherwise.
+  const res = classifyChangedPaths(paths, {
+    truncated: Boolean(a.pathsTruncated),
+    map: pathMapFor(process.env.PATH_MAP),
+  })
   if (res.hits.length === 0 && !res.mirror) continue
   flagged++
 
@@ -32,7 +36,7 @@ for (const r of rows) {
   if (res.mirror) {
     const m = res.mirror
     console.log(
-      `   · canonical-payload mirror: ${m.touched.length}/6 ports, vectors ${
+      `   · canonical-payload mirror: ${m.touched.length}/${m.touched.length + m.missing.length} ports, vectors ${
         m.vectorsUpdated ? "updated" : "NOT updated"
       }` +
         (m.complete

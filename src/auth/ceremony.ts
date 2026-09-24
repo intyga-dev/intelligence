@@ -11,6 +11,7 @@ import {
 } from "../gate/rp.ts"
 import { tenantBinding } from "../actions/execute.ts"
 import { prisma } from "../store/client.ts"
+import { hashInvite, isInviteShaped, resolveInvite } from "./invite.ts"
 import { createSession } from "./session.ts"
 
 // Logging in and enrolling, both through Intyga's platform plane.
@@ -57,46 +58,90 @@ async function activeMember(tenantId: string, externalId: string) {
 
 // ─── Enrolment ───────────────────────────────────────────────────────────────────────────────────
 
-export async function beginEnrol(tenantId: string, externalId: string): Promise<unknown> {
-  const member = await activeMember(tenantId, externalId)
-  // Enrolment is only ever offered to someone an administrator already added. It is not a signup
-  // path: anyone who could enrol themselves could grant themselves approval rights.
-  if (!member) throw new AuthError("not an administrator of this workspace")
+//
+// WHO is being enrolled comes from the invite, never from the request. See src/auth/invite.ts for
+// why an externalId in the body cannot be the check: it is a name, not a secret, and trusting it let
+// anyone bind their own passkey to any administrator. Proof of possession of the new key is
+// necessary and proves nothing about who is holding it.
+
+/** One message for every way an invite can be unusable, so a prober learns nothing from it. */
+const INVITE_UNUSABLE =
+  "This enrolment link is invalid, expired or already used. Ask an administrator for a new one."
+
+export async function beginEnrol(
+  tenantId: string,
+  inviteToken: string,
+): Promise<{ options: unknown; externalId: string; label: string }> {
+  const invite = await resolveInvite(tenantId, inviteToken)
+  if (!invite) throw new AuthError(INVITE_UNUSABLE)
 
   const cfg = await cfgFor(tenantId)
-  await ensureSubject(cfg, externalId, { source: "intyga-intelligence" })
+  await ensureSubject(cfg, invite.externalId, { source: "intyga-intelligence" })
 
   await prisma.authCeremony.create({
     data: {
       tenantId,
       kind: "enrol",
-      externalId,
+      externalId: invite.externalId,
+      inviteId: invite.id,
       expiresAt: new Date(Date.now() + CEREMONY_TTL_MS),
     },
   })
-  return registrationOptions(cfg, externalId)
+  return {
+    options: await registrationOptions(cfg, invite.externalId),
+    externalId: invite.externalId,
+    label: invite.label,
+  }
 }
 
-export async function completeEnrol(tenantId: string, externalId: string, response: unknown): Promise<void> {
-  // The ceremony row is claimed atomically, so one begin yields at most one enrolment.
-  const claimed = await prisma.authCeremony.updateMany({
-    where: {
-      tenantId,
-      kind: "enrol",
-      externalId,
-      consumedAt: null,
-      expiresAt: { gt: new Date() },
-    },
-    data: { consumedAt: new Date() },
+export async function completeEnrol(tenantId: string, inviteToken: string, response: unknown): Promise<void> {
+  if (!isInviteShaped(inviteToken)) throw new AuthError(INVITE_UNUSABLE)
+  const now = new Date()
+
+  // The invite and its ceremony are claimed together, atomically: two concurrent completions of one
+  // link cannot both bind a credential, and a link with no begun ceremony binds nothing.
+  const claimed = await prisma.$transaction(async (tx) => {
+    const invite = await tx.memberInvite.findUnique({
+      where: { tokenHash: hashInvite(inviteToken) },
+      include: { member: { select: { externalId: true, active: true } } },
+    })
+    if (!invite || invite.tenantId !== tenantId || !invite.member.active) return null
+
+    const inv = await tx.memberInvite.updateMany({
+      where: { id: invite.id, consumedAt: null, expiresAt: { gt: now } },
+      data: { consumedAt: now },
+    })
+    if (inv.count !== 1) return null
+
+    const cer = await tx.authCeremony.updateMany({
+      where: { tenantId, kind: "enrol", inviteId: invite.id, consumedAt: null, expiresAt: { gt: now } },
+      data: { consumedAt: now },
+    })
+    // Throwing rolls the invite claim back with it, so a link whose ceremony lapsed still works.
+    if (cer.count === 0) throw new AuthError("This enrolment timed out. Start again from the same link.")
+
+    return { inviteId: invite.id, memberId: invite.memberId, externalId: invite.member.externalId }
   })
-  if (claimed.count === 0) throw new AuthError("no live enrolment for this subject")
+  if (!claimed) throw new AuthError(INVITE_UNUSABLE)
 
   const cfg = await cfgFor(tenantId)
-  await registerCredential(cfg, externalId, response)
+  try {
+    await registerCredential(cfg, claimed.externalId, response)
+  } catch (err) {
+    // Nothing was bound, so the link is handed back rather than burnt — a refused attestation is
+    // usually a wrong-device retry, and making the admin re-issue for it teaches nothing. Only the
+    // claim this call made is released (matched on its own timestamp).
+    await prisma.memberInvite.updateMany({
+      where: { id: claimed.inviteId, consumedAt: now },
+      data: { consumedAt: null },
+    })
+    throw err
+  }
 
+  // First enrolment only: a second passkey added later does not rewrite when this member started.
   await prisma.member.updateMany({
-    where: { tenantId, externalId },
-    data: { enrolledAt: new Date() },
+    where: { id: claimed.memberId, enrolledAt: null },
+    data: { enrolledAt: now },
   })
 }
 

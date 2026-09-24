@@ -41,6 +41,7 @@ services:
       DIRECT_URL: postgresql://intelligence:dev-local-only@postgres:5432/intelligence_dev
       PORT: "4100"
       TICK_TOKEN: dev-tick-token-change-me
+      SETUP_TOKEN: dev-setup-token-change-me
       SECRETS_ENC_KEY: dev-secrets-enc-key-change-me-32b
       # Unset on purpose: with no key the null judgment provider runs and nothing leaves the host.
       # TYPESAFE_API_KEY: ""

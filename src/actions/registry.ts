@@ -1,7 +1,11 @@
 import { z } from "zod"
+import { newSigningSecret, parseTarget } from "../alerts/deliver.ts"
+import { issueInvite } from "../auth/invite.ts"
+import { DETECTORS } from "../domain/detectors/index.ts"
+import { isProdLike } from "../config.ts"
 import type { GatedAction } from "../gate/intent.ts"
 import { prisma } from "../store/client.ts"
-import { encryptSecret } from "../store/crypto.ts"
+import { decryptSecret, encryptSecret } from "../store/crypto.ts"
 
 // Every privileged action in one table.
 //
@@ -19,9 +23,32 @@ export interface ActionDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   /** Shown to the approver. Written in the imperative — "Turn on …", not "toggles the …". */
   summary: (params: z.infer<S>) => string
   /** Runs only after the signature is redeemed, with the exact params that were signed. */
-  run: (tenantId: string, params: z.infer<S>, receipt: { nonce: string }) => Promise<void>
+  // biome-ignore lint/suspicious/noConfusingVoidType: `void` is what lets most actions return nothing; `undefined` would make every one of them write `return undefined`.
+  run: (tenantId: string, params: z.infer<S>, receipt: { nonce: string }) => Promise<void | ActionOutcome>
   /** Consequence class, used to style the confirmation. */
   impact: "low" | "medium" | "high"
+}
+
+/**
+ * What an action hands back to the approver who ran it, beyond "applied".
+ *
+ * Today only an enrolment invite: minted INSIDE `run`, after the signature is redeemed, so the token
+ * never appears in the signed (and stored-in-the-clear) parameters. Shown once in the response and
+ * stored only as a hash.
+ */
+export interface ActionOutcome {
+  invite?: { token: string; label: string; expiresAt: string }
+}
+
+/** Issue an invite for an active member, or fail the action if there is none. */
+async function inviteFor(tenantId: string, externalId: string): Promise<ActionOutcome> {
+  const member = await prisma.member.findFirst({
+    where: { tenantId, externalId, active: true },
+    select: { id: true, label: true },
+  })
+  if (!member) throw new Error("no active administrator with that subject id")
+  const invite = await issueInvite(prisma, { tenantId, memberId: member.id })
+  return { invite: { token: invite.token, label: member.label, expiresAt: invite.expiresAt.toISOString() } }
 }
 
 /**
@@ -126,15 +153,31 @@ export const ACTIONS = {
       label: z.string().min(1).max(200),
     }),
     summary: (p: { label: string }) =>
-      `Add "${p.label}" as an Intelligence administrator. They will be able to approve privileged ` +
-      "actions once they enrol a passkey.",
+      `Add "${p.label}" as an Intelligence administrator and create a one-time enrolment link for ` +
+      "them. They will be able to approve privileged actions once they enrol a passkey with it.",
     run: async (tenantId, p: { externalId: string; label: string }) => {
       await prisma.member.upsert({
         where: { tenantId_externalId: { tenantId, externalId: p.externalId } },
         create: { tenantId, externalId: p.externalId, label: p.label },
         update: { label: p.label, active: true },
       })
+      return inviteFor(tenantId, p.externalId)
     },
+  }),
+
+  /**
+   * A fresh enrolment link for an existing administrator: never enrolled, a lost link, a new device.
+   *
+   * High impact, and signed, because the link is the power to add a passkey to that account — the
+   * same power as approving as them. Issuing one supersedes any link still open for that member.
+   */
+  "intelligence.member.invite": defineAction({
+    impact: "high",
+    schema: z.object({ externalId: z.string().min(1).max(200) }),
+    summary: (p: { externalId: string }) =>
+      `Create a one-time enrolment link for administrator "${p.externalId}". Whoever opens it can add ` +
+      "a passkey to that administrator — send it only to them. Any earlier link for them stops working.",
+    run: async (tenantId, p: { externalId: string }) => inviteFor(tenantId, p.externalId),
   }),
 
   /**
@@ -187,6 +230,84 @@ export const ACTIONS = {
       if (res.count !== 1) throw new Error("member not found in this tenant")
     },
   }),
+
+  /**
+   * Turn an alert rule ON — the moment finding titles, severities and timestamps start leaving this
+   * host for its destination.
+   *
+   * The destination HOST is a signed parameter, and `run` refuses unless it matches the stored
+   * destination. The approver is shown where data will go, and the signature binds that: a rule
+   * cannot be approved for one host and deliver to another.
+   */
+  "intelligence.alert.activate": defineAction({
+    impact: "high",
+    schema: z.object({ ruleId: z.uuid(), host: z.string().min(1).max(300) }),
+    summary: (p: { host: string }) =>
+      `Turn ON an alert rule. Matching findings — titles, severities and timestamps, which can name ` +
+      `the subject involved — will be sent to ${p.host}.`,
+    run: async (tenantId, p: { ruleId: string; host: string }, receipt) => {
+      const rule = await prisma.alertRule.findFirst({
+        where: { id: p.ruleId, tenantId },
+        select: { targetCipher: true, signingSecretCipher: true },
+      })
+      if (!rule) throw new Error("alert rule not found in this tenant")
+      const target = decryptSecret(rule.targetCipher)
+      if (!target || !rule.signingSecretCipher) {
+        throw new Error("this rule predates alert delivery and cannot be turned on — recreate it")
+      }
+      if (new URL(target).host !== p.host) throw new Error("the approved host is not this rule's destination")
+      await prisma.alertRule.update({
+        where: { id: p.ruleId },
+        data: { active: true, activatedAt: new Date(), activationReceipt: receipt.nonce, lastError: null },
+      })
+    },
+  }),
+
+  "intelligence.alert.deactivate": defineAction({
+    impact: "low",
+    schema: z.object({ ruleId: z.uuid() }),
+    summary: () => "Turn OFF an alert rule. Nothing further will be sent to its destination.",
+    run: async (tenantId, p: { ruleId: string }, receipt) => {
+      const res = await prisma.alertRule.updateMany({
+        where: { id: p.ruleId, tenantId },
+        data: { active: false, activationReceipt: receipt.nonce },
+      })
+      if (res.count !== 1) throw new Error("alert rule not found in this tenant")
+    },
+  }),
+
+  /**
+   * Switching a detector OFF is signed for the same reason the rest is: silencing the thing that
+   * would notice is the first move of anyone who has taken over a session. On is signed too, so the
+   * record of who changed it is symmetric.
+   */
+  "intelligence.detector.disable": defineAction({
+    impact: "high",
+    schema: z.object({ detector: z.enum(DETECTORS) }),
+    summary: (p: { detector: string }) =>
+      `Turn OFF the ${p.detector} detector. It will stop producing findings, and what happens while ` +
+      "it is off is not reviewed later.",
+    run: async (tenantId, p: { detector: string }) => {
+      await prisma.detectorConfig.upsert({
+        where: { tenantId_detector: { tenantId, detector: p.detector } },
+        create: { tenantId, detector: p.detector, enabled: false },
+        update: { enabled: false },
+      })
+    },
+  }),
+
+  "intelligence.detector.enable": defineAction({
+    impact: "low",
+    schema: z.object({ detector: z.enum(DETECTORS) }),
+    summary: (p: { detector: string }) => `Turn ON the ${p.detector} detector.`,
+    run: async (tenantId, p: { detector: string }) => {
+      await prisma.detectorConfig.upsert({
+        where: { tenantId_detector: { tenantId, detector: p.detector } },
+        create: { tenantId, detector: p.detector, enabled: true },
+        update: { enabled: true },
+      })
+    },
+  }),
 } satisfies Record<GatedAction, ActionDef>
 
 /** Runtime lookup with the generic erased — the executor parses before it calls `run`. */
@@ -197,31 +318,45 @@ export function actionDef(action: string): ActionDef | null {
 export const ALERT_RULE_INPUT = z.object({
   name: z.string().min(1).max(120),
   minSeverity: z.enum(["info", "low", "medium", "high", "critical"]),
-  channel: z.enum(["webhook", "slack", "email"]),
+  // No `email`: there is no mail sender, and a rule that is stored but can never fire is worse than
+  // no rule. The enum value stays in the schema for when there is one.
+  channel: z.enum(["webhook", "slack"], {
+    error: "Choose webhook or Slack — email delivery is not available yet",
+  }),
   target: z.string().min(1).max(2000),
   cooldownMinutes: z.number().int().min(0).max(10_080),
 })
 
 /**
- * Alert rules are NOT gated by a signature.
+ * Creating a rule is NOT gated by a signature; turning it ON is.
  *
- * Deliberate: creating a rule cannot cause an action, disclose data or change what is recorded — at
- * worst it sends a notification to somewhere useless. Requiring a passkey tap for every threshold
- * tweak would train people to approve reflexively, which is how a signature stops meaning anything.
- * Gate what has consequence; leave the rest to RBAC.
+ * The same split as connectors: a rule that is off sends nothing, so creating one has no consequence,
+ * and requiring a passkey tap for every draft would train people to approve reflexively. Activation
+ * is the moment data leaves the host, and that is signed (`intelligence.alert.activate`).
+ *
+ * Returns the signing secret for the `x-intelligence-signature` header, in plaintext exactly once.
+ * It is stored encrypted and never shown again.
  */
 export async function createAlertRule(
   tenantId: string,
   input: z.infer<typeof ALERT_RULE_INPUT>,
-): Promise<void> {
-  await prisma.alertRule.create({
+): Promise<{ id: string; host: string; signingSecret: string }> {
+  // Throws UnsafeTargetError with an authored message the form can show.
+  const target = parseTarget(input.target, { allowLoopbackHttp: !isProdLike })
+  const signingSecret = newSigningSecret()
+  const created = await prisma.alertRule.create({
     data: {
       tenantId,
       name: input.name,
       minSeverity: input.minSeverity,
       channel: input.channel,
-      targetCipher: encryptSecret(input.target),
+      targetCipher: encryptSecret(target.url),
+      targetHost: target.host,
+      signingSecretCipher: encryptSecret(signingSecret),
       cooldownMinutes: input.cooldownMinutes,
+      active: false,
     },
+    select: { id: true },
   })
+  return { id: created.id, host: target.host, signingSecret }
 }

@@ -34,6 +34,8 @@ interface GhPull {
   state: string
   updated_at: string
   merged_at: string | null
+  /** The commit a merged PR became on the base branch — what a deploy of it actually runs. */
+  merge_commit_sha?: string | null
   draft?: boolean
   head: { sha: string }
   user: { login: string } | null
@@ -121,6 +123,15 @@ export const githubConnector: PollConnector = {
       help: "Runs of these workflows are treated as deployments, which is what regression correlation anchors on.",
     },
     {
+      name: "pathMap",
+      label: "Sensitive-path map",
+      placeholder: "generic",
+      help:
+        "Which paths count as security-sensitive for the code-change detector. `generic` (the default) " +
+        "matches conventional names — auth, sessions, permissions, crypto, migrations, CI — in any " +
+        "repository. `intyga-core` is the tuned map for the INTYGA monorepo itself.",
+    },
+    {
       name: "token",
       label: "GitHub token",
       placeholder: "github_pat_…",
@@ -201,6 +212,9 @@ export const githubConnector: PollConnector = {
             number: pr.number,
             title: pr.title,
             sha: pr.head.sha,
+            // A squash or merge commit has a different SHA from the PR head, and that commit is what
+            // a deploy workflow runs. Regression correlation matches a deploy on either.
+            mergeSha: pr.merged_at ? (pr.merge_commit_sha ?? "") : "",
             state: pr.state,
             draft: pr.draft ?? false,
             merged: Boolean(pr.merged_at),

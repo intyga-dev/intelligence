@@ -19,7 +19,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "test": "node --test --test-concurrency=1 --experimental-strip-types 'src/**/*.test.ts'",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "check:boundary": "node scripts/check-no-intyga-client.mjs",

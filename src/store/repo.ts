@@ -286,6 +286,72 @@ export async function setCursor(connectionId: string, name: string, value: strin
   })
 }
 
+/**
+ * Events that ARRIVED in (after, until], by ingestion time rather than event time.
+ *
+ * For the event-driven detectors: a pull request's own timestamp is when GitHub last changed it,
+ * which can be long before we polled it. Reading by arrival is what makes "each event exactly once"
+ * hold across irregular ticks and late deliveries.
+ */
+export async function loadIngestedEvents(
+  tenantId: string,
+  opts: { kinds: readonly string[]; after: Date; until: Date; limit?: number },
+): Promise<NormalizedEvent[]> {
+  const rows = await prisma.event.findMany({
+    where: { tenantId, kind: { in: [...opts.kinds] }, createdAt: { gt: opts.after, lte: opts.until } },
+    orderBy: { createdAt: "asc" },
+    take: opts.limit ?? 10_000,
+  })
+  return rows.map(toNormalized)
+}
+
+function toNormalized(r: {
+  connectionId: string
+  source: string
+  sourceId: string
+  kind: string
+  at: Date
+  subjectRef: string | null
+  correlationRef: string | null
+  attrs: unknown
+}): NormalizedEvent {
+  return {
+    connectionId: r.connectionId,
+    source: r.source,
+    sourceId: r.sourceId,
+    kind: r.kind,
+    at: r.at,
+    subjectRef: r.subjectRef,
+    correlationRef: r.correlationRef,
+    attrs: r.attrs as NormalizedEvent["attrs"],
+  }
+}
+
+export async function getDetectorCursor(tenantId: string, detector: string): Promise<Date | null> {
+  const row = await prisma.detectorCursor.findUnique({
+    where: { tenantId_detector: { tenantId, detector } },
+    select: { at: true },
+  })
+  return row?.at ?? null
+}
+
+export async function setDetectorCursor(tenantId: string, detector: string, at: Date): Promise<void> {
+  await prisma.detectorCursor.upsert({
+    where: { tenantId_detector: { tenantId, detector } },
+    create: { tenantId, detector, at },
+    update: { at },
+  })
+}
+
+/** Which detectors a tenant has switched off. Absent config means on. */
+export async function disabledDetectors(tenantId: string): Promise<Set<string>> {
+  const rows = await prisma.detectorConfig.findMany({
+    where: { tenantId, enabled: false },
+    select: { detector: true },
+  })
+  return new Set(rows.map((r) => r.detector))
+}
+
 export async function activeConnections(kind?: "intyga" | "github") {
   return prisma.connection.findMany({
     where: { active: true, ...(kind ? { kind } : {}) },

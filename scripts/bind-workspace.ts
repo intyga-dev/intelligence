@@ -22,6 +22,7 @@
 
 import "../src/loadenv.ts"
 import { readFileSync } from "node:fs"
+import { enrolLink, issueInvite } from "../src/auth/invite.ts"
 import { prisma } from "../src/store/client.ts"
 import { encryptSecret } from "../src/store/crypto.ts"
 
@@ -98,7 +99,7 @@ await prisma.tenant.update({
 
 const members = await prisma.member.findMany({
   where: { tenantId: tenant.id, active: true },
-  select: { externalId: true, label: true, enrolledAt: true },
+  select: { id: true, externalId: true, label: true, enrolledAt: true },
   orderBy: { createdAt: "asc" },
 })
 
@@ -111,11 +112,19 @@ Administrators:`)
 for (const m of members) {
   console.log(`  ${m.externalId.padEnd(16)} ${m.enrolledAt ? "enrolled" : "NOT enrolled"}  (${m.label})`)
 }
-const next = members.find((m) => !m.enrolledAt)
+// Every administrator not yet enrolled gets a fresh one-time link. Issuing supersedes any earlier
+// link for them — including one printed by provision-tenant.ts — so only these work from now on.
+const links: string[] = []
+for (const m of members.filter((x) => !x.enrolledAt)) {
+  const invite = await issueInvite(prisma, { tenantId: tenant.id, memberId: m.id })
+  links.push(`     ${m.externalId}: ${enrolLink(origin, invite.token)}`)
+}
 console.log(`
 Next:
   1. ${origin}/settings — press "Test connection". It must succeed before anything else will.
-  2. ${origin}/members/enrol?id=${next?.externalId ?? "<subject>"} — enrol a passkey.
+  2. Enrol a passkey from the one-time link below. Treat each like a password: whoever opens it
+     first becomes that administrator. They expire in 72 hours; scripts/invite-member.ts re-issues.
+${links.length > 0 ? links.join("\n") : "     (everyone is already enrolled)"}
   3. ${origin}/login — sign in.
 `)
 

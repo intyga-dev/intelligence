@@ -16,8 +16,13 @@ export type GatedAction =
   | "intelligence.judgment.disable"
   | "intelligence.data.purge"
   | "intelligence.member.add"
+  | "intelligence.member.invite"
   | "intelligence.member.remove"
   | "intelligence.workspace.rebind"
+  | "intelligence.alert.activate"
+  | "intelligence.alert.deactivate"
+  | "intelligence.detector.enable"
+  | "intelligence.detector.disable"
 
 export interface GateIntent {
   action: GatedAction

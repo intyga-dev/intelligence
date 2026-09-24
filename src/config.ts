@@ -7,6 +7,7 @@
 
 const WEAK = new Set([
   "dev-tick-token-change-me",
+  "dev-setup-token-change-me",
   "dev-secrets-enc-key-change-me-32b",
   "dev-local-only",
   "changeme",
@@ -60,6 +61,23 @@ export const config = {
   /** Bearer token for POST /internal/tick. Held by the scheduler, not by a person. */
   get tickToken(): string {
     return secret("TICK_TOKEN", "dev-tick-token-change-me")
+  },
+
+  /**
+   * Required to complete first-time setup from the browser (`POST /settings/bind`).
+   *
+   * Before a workspace is bound nobody exists who could approve anything, so the setup form cannot
+   * be gated by a passkey — and without some secret, whoever finds a freshly deployed instance first
+   * binds it to THEIR workspace and becomes its administrator. The operator holds this; a stranger
+   * does not.
+   *
+   * `null` in production when unset: browser setup is then disabled and `scripts/bind-workspace.ts`
+   * (which needs the database credential) is the only way in. A placeholder or short value throws,
+   * at the moment of use rather than at boot, because it stops mattering once setup is done.
+   */
+  get setupToken(): string | null {
+    if (isProdLike && !process.env.SETUP_TOKEN) return null
+    return secret("SETUP_TOKEN", "dev-setup-token-change-me")
   },
 
   /** Encrypts per-connection secrets at rest. */

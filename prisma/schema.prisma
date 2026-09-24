@@ -76,6 +76,7 @@ model Tenant {
   members     Member[]
   alertRules  AlertRule[]
   detectors   DetectorConfig[]
+  cursors     DetectorCursor[]
 }
 
 /// An Intelligence admin.
@@ -97,8 +98,9 @@ model Member {
   active     Boolean   @default(true)
   createdAt  DateTime  @default(now())
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sessions Session[]
+  invites  MemberInvite[]
 
   @@unique([tenantId, externalId])
   @@index([tenantId, active])
@@ -421,6 +423,7 @@ model PendingAction {
   @@index([expiresAt])
 }
 
+/// `email` is reserved: there is no mail sender, so rules on it are refused at creation.
 enum AlertChannel {
   webhook
   slack
@@ -433,21 +436,33 @@ enum AlertChannel {
 /// is true, alert rules decide what is worth waking someone for. Keeping those separate means
 /// tuning noise never changes what gets recorded.
 model AlertRule {
-  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String       @db.Uuid
-  name            String
+  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId            String       @db.Uuid
+  name                String
   /// Minimum severity that fires this rule.
-  minSeverity     Severity     @default(high)
+  minSeverity         Severity     @default(high)
   /// Empty means every category.
-  categories      Category[]   @default([])
-  channel         AlertChannel
+  categories          Category[]   @default([])
+  channel             AlertChannel
   /// Destination, encrypted: a webhook URL is a credential — anyone holding it can post as us.
-  targetCipher    String
-  active          Boolean      @default(true)
+  targetCipher        String
+  /// Host of the destination, in the clear. Shown to the approver and bound into the signed
+  /// activation, so a rule cannot be switched on for one host and deliver to another.
+  targetHost          String       @default("")
+  /// HMAC key for the `x-intelligence-signature` header, encrypted. Shown once at creation.
+  signingSecretCipher String?
+  /// OFF until a signed activation: turning a rule on is the moment findings start leaving the host.
+  active              Boolean      @default(false)
+  activatedAt         DateTime?
+  activationReceipt   String?
   /// Suppression window so a recurring finding does not page every tick.
-  cooldownMinutes Int          @default(60)
-  lastFiredAt     DateTime?
-  createdAt       DateTime     @default(now())
+  cooldownMinutes     Int          @default(60)
+  /// Last SUCCESSFUL delivery. Also the watermark: the next delivery carries findings seen after it.
+  lastFiredAt         DateTime?
+  lastAttemptAt       DateTime?
+  /// Authored text for the last failed delivery (a status code, "timed out"), null after a success.
+  lastError           String?
+  createdAt           DateTime     @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -462,6 +477,25 @@ model DetectorConfig {
   enabled   Boolean  @default(true)
   /// Threshold overrides, shape defined by the detector itself.
   settings  Json     @default("{}")
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, detector])
+}
+
+/// How far an event-driven detector has read, per tenant.
+///
+/// The code-change and deploy-regression detectors act on individual events (a pull request, a
+/// deployment), unlike the burst detector, which re-reads a sliding window. Re-reading those would
+/// fold the same pull request into its finding on every tick — inflating the count and re-arming
+/// every alert. So each reads only what arrived after this mark, and moves it when it succeeds.
+/// Losing a row re-scans the lookback once; it never loses a finding.
+model DetectorCursor {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  detector  String
+  at        DateTime
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -506,10 +540,40 @@ model AuthCeremony {
   /// The signing-challenge nonce (login) — null for an enrolment, which has no nonce of its own.
   nonce       String?   @unique
   payloadHash String?
+  /// The invite this enrolment redeems. Set for every enrolment, null for a login.
+  inviteId    String?   @db.Uuid
   createdAt   DateTime  @default(now())
   expiresAt   DateTime
   consumedAt  DateTime?
 
   @@index([tenantId, kind])
+  @@index([inviteId])
+  @@index([expiresAt])
+}
+
+/// A one-time right to bind a passkey to one member.
+///
+/// This is what makes enrolment safe. The member's externalId is not a secret — it is typed into the
+/// login form and shown on /members — so "a member with this id exists" can never be the check that
+/// decides who may bind a credential to it: anyone could enrol their own key as "admin" and then
+/// sign in and approve changes as them. The identity being enrolled is derived from this row, which
+/// only an existing administrator (a signed action) or the operator (a CLI with database access)
+/// can create. Proof of possession of the new key proves nothing about who is holding it.
+///
+/// Only the SHA-256 of the token is stored, as with sessions: a read of this table must not yield a
+/// usable invite.
+model MemberInvite {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @db.Uuid
+  memberId   String    @db.Uuid
+  tokenHash  String    @unique
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  /// Set when a passkey was bound with it, or when a newer invite for the same member superseded it.
+  consumedAt DateTime?
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId, consumedAt])
   @@index([expiresAt])
 }

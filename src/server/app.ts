@@ -1,9 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify"
 import { z } from "zod"
 import { ALERT_RULE_INPUT, createAlertRule } from "../actions/registry.ts"
+import { UnsafeTargetError } from "../alerts/deliver.ts"
 import { ActionError, completeAction, openAction, tenantBinding } from "../actions/execute.ts"
-import { resolveGateConfig, testConnection } from "../gate/rp.ts"
+import { GateError, resolveGateConfig, testConnection } from "../gate/rp.ts"
 import { AuthError, beginEnrol, beginLogin, completeEnrol, completeLogin } from "../auth/ceremony.ts"
+import { issueInvite } from "../auth/invite.ts"
 import {
   clearCookie,
   COOKIE,
@@ -20,6 +22,8 @@ import { createLimiter } from "./ratelimit.ts"
 import { allConnectors, connectorFor, isPush } from "../connectors/index.ts"
 import { NormalizeError } from "../connectors/intyga/normalize.ts"
 import { DEFAULT_BURST_CONFIG } from "../domain/detectors/denialBurst.ts"
+import { DEFAULT_REGRESSION_CONFIG } from "../domain/detectors/deployRegression.ts"
+import { DETECTOR_INFO, DETECTORS, type DetectorId } from "../domain/detectors/index.ts"
 import { previewRequest, projectForJudgment } from "../redaction/project.ts"
 import { runDetectors } from "../jobs/tick.ts"
 import {
@@ -43,6 +47,7 @@ import {
 } from "../store/repo.ts"
 import {
   activityPage,
+  alertCreatedPage,
   alertsPage,
   type ConnectorRow,
   connectorCreatedPage,
@@ -70,6 +75,17 @@ const WINDOW_MS = 7 * 24 * 60 * 60_000
 const WINDOW_LABEL = "7 days"
 const RETENTION_DAYS = 90
 
+/** The thresholds each detector runs with, as shown on /detectors. Read from the detectors' own defaults. */
+const DETECTOR_SETTINGS: Readonly<Record<DetectorId, string>> = {
+  "denial-burst": `floor ≥ ${DEFAULT_BURST_CONFIG.floor}, ratio ≥ ${DEFAULT_BURST_CONFIG.ratio}×, window ${
+    DEFAULT_BURST_CONFIG.windowMs / 60_000
+  }m`,
+  "sensitive-code-change": "path map per GitHub connector; noise excluded; drafts skipped",
+  "deploy-regression": `${DEFAULT_REGRESSION_CONFIG.postMs / 60_000}m after vs ${
+    DEFAULT_REGRESSION_CONFIG.baselineMs / 3_600_000
+  }h before; ≥ ${DEFAULT_REGRESSION_CONFIG.floor} and ≥ ${DEFAULT_REGRESSION_CONFIG.ratio}×`,
+}
+
 /**
  * Compare an `Authorization: Bearer …` header against an expected token in constant time.
  *
@@ -79,9 +95,28 @@ const RETENTION_DAYS = 90
  */
 function bearerMatches(header: string | undefined, expected: string): boolean {
   if (!header?.startsWith("Bearer ")) return false
-  const presented = createHash("sha256").update(header.slice(7)).digest()
-  const want = createHash("sha256").update(expected).digest()
-  return timingSafeEqual(presented, want)
+  return tokenMatches(header.slice(7), expected)
+}
+
+/** Constant-time equality for two secrets of any length — see `bearerMatches` for why digest first. */
+function tokenMatches(presented: string, expected: string): boolean {
+  const a = createHash("sha256").update(presented).digest()
+  const b = createHash("sha256").update(expected).digest()
+  return timingSafeEqual(a, b)
+}
+
+/**
+ * The message a client may see for a failure.
+ *
+ * Only the typed errors carry authored messages — AuthError, ActionError and GateError are written
+ * in this codebase and say nothing an unauthenticated caller should not hear. Anything else is raw
+ * exception text (Prisma names columns, undici embeds URLs) and is replaced by `fallback`; the
+ * caller logs the real message server-side.
+ */
+function clientError(err: unknown, fallback: string): string {
+  return err instanceof AuthError || err instanceof ActionError || err instanceof GateError
+    ? err.message
+    : fallback
 }
 
 export function buildApp(): FastifyInstance {
@@ -258,8 +293,16 @@ export function buildApp(): FastifyInstance {
     if (isPublic(req.url)) return
 
     const t = await tenant()
-    // No workspace at all: signup is the only thing to show, and there is nobody who could sign in.
-    if (!t?.intygaKeyCipher) return
+    // Not bound yet: nobody exists who could sign in, so the setup form is the ONLY thing reachable.
+    // Everything else is closed rather than open — an unbound instance is exactly the one a stranger
+    // is most likely to find first, and "no workspace, so no auth" used to let them create connectors,
+    // replace the signing key and read the console. The setup form itself is gated by SETUP_TOKEN.
+    if (!t?.intygaKeyCipher) {
+      const path = req.url.split("?")[0] ?? req.url
+      if (path === "/" || path === "/settings/bind") return
+      if ((req.headers.accept ?? "").includes("text/html")) return reply.redirect("/", 303)
+      return reply.code(409).send({ error: "this instance is not connected to an INTYGA workspace yet" })
+    }
 
     if (!r.actor) {
       // HTML gets a redirect, JSON gets a 401 — a fetch() following a redirect to a login page and
@@ -284,6 +327,20 @@ export function buildApp(): FastifyInstance {
     return a ? { actor: { label: a.label, externalId: a.externalId } } : {}
   }
 
+  /**
+   * Whether browser setup is available. A placeholder SETUP_TOKEN in production counts as available
+   * here so the form renders — submitting it is what explains the problem, in words.
+   */
+  const setupEnabled = (): boolean => {
+    try {
+      return config.setupToken !== null
+    } catch {
+      return true
+    }
+  }
+  const onboarding = (error?: string): string =>
+    onboardingPage({ setupEnabled: setupEnabled(), ...(error ? { error } : {}) })
+
   app.get("/login", async (req, reply) => {
     if (actorOf(req)) return reply.redirect("/", 303)
     const q = req.query as { id?: string }
@@ -299,7 +356,9 @@ export function buildApp(): FastifyInstance {
       return await beginLogin(t.id, parsed.data.externalId)
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, "login begin failed")
-      return reply.code(err instanceof AuthError ? 400 : 502).send({ error: (err as Error).message })
+      return reply
+        .code(err instanceof AuthError ? 400 : 502)
+        .send({ error: clientError(err, "could not start sign-in") })
     }
   })
 
@@ -315,7 +374,9 @@ export function buildApp(): FastifyInstance {
       return reply.header("set-cookie", sessionCookie(token)).send({ ok: true, label })
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, "login refused")
-      return reply.code(err instanceof AuthError ? 401 : 502).send({ error: (err as Error).message })
+      return reply
+        .code(err instanceof AuthError ? 401 : 502)
+        .send({ error: clientError(err, "sign-in failed") })
     }
   })
 
@@ -326,36 +387,41 @@ export function buildApp(): FastifyInstance {
     return reply.header("set-cookie", clearCookie()).redirect("/login", 303)
   })
 
-  app.get("/members/enrol", async (req, reply) => {
-    const q = req.query as { id?: string }
-    if (!q.id) return reply.redirect("/login", 303)
-    return html(reply, enrolPage({ externalId: q.id }))
-  })
+  // Enrolment is by INVITE, never by subject id — see src/auth/invite.ts. The page takes no
+  // parameters: the invite rides in the URL fragment, which the browser never sends here, and the
+  // page posts it in a body. Who is being enrolled is derived from the invite server-side.
+  app.get("/members/enrol", async (_req, reply) => html(reply, enrolPage()))
+
+  const INVITE_BODY = z.object({ invite: z.string().min(1).max(100) })
 
   app.post("/members/enrol/begin", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ error: "no workspace" })
-    const parsed = z.object({ externalId: z.string().min(1).max(200) }).safeParse(json(req))
+    const parsed = INVITE_BODY.safeParse(json(req))
     if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
     try {
-      return { options: await beginEnrol(t.id, parsed.data.externalId) }
+      return await beginEnrol(t.id, parsed.data.invite)
     } catch (err) {
-      return reply.code(err instanceof AuthError ? 400 : 502).send({ error: (err as Error).message })
+      req.log.warn({ err: (err as Error).message }, "enrol begin failed")
+      return reply
+        .code(err instanceof AuthError ? 400 : 502)
+        .send({ error: clientError(err, "could not start enrolment") })
     }
   })
 
   app.post("/members/enrol/complete", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ error: "no workspace" })
-    const parsed = z
-      .object({ externalId: z.string().min(1).max(200), response: z.unknown() })
-      .safeParse(json(req))
+    const parsed = INVITE_BODY.extend({ response: z.unknown() }).safeParse(json(req))
     if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
     try {
-      await completeEnrol(t.id, parsed.data.externalId, parsed.data.response)
+      await completeEnrol(t.id, parsed.data.invite, parsed.data.response)
       return { ok: true }
     } catch (err) {
-      return reply.code(err instanceof AuthError ? 400 : 502).send({ error: (err as Error).message })
+      req.log.warn({ err: (err as Error).message }, "enrol refused")
+      return reply
+        .code(err instanceof AuthError ? 400 : 502)
+        .send({ error: clientError(err, "enrolment failed") })
     }
   })
 
@@ -379,7 +445,9 @@ export function buildApp(): FastifyInstance {
 
   app.get("/", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    // A tenant can exist unbound (provision-tenant.ts runs before bind-workspace.ts); it has no
+    // console to show until it is connected.
+    if (!t?.intygaKeyCipher) return html(reply, onboarding())
     const since = new Date(Date.now() - WINDOW_MS)
     const [stats, events, refusals, findings, c] = await Promise.all([
       overview(t.id, since),
@@ -404,7 +472,7 @@ export function buildApp(): FastifyInstance {
 
   app.get("/findings", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
     const filter = ((req.query as { status?: string }).status ?? "open").toLowerCase()
     const status = filter === "all" ? undefined : filter === "open" ? ["new", "investigating"] : [filter]
     const opts: { status?: string[]; limit?: number } = { limit: 200 }
@@ -422,7 +490,7 @@ export function buildApp(): FastifyInstance {
 
   app.get("/activity", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
     const since = new Date(Date.now() - WINDOW_MS)
     const [events, refusals, subjects, actions, latency, c] = await Promise.all([
       eventSeries(t.id, since, "hour"),
@@ -449,7 +517,7 @@ export function buildApp(): FastifyInstance {
 
   app.get("/connectors", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
     const conns = await prisma.connection.findMany({
       where: { tenantId: t.id },
       orderBy: [{ builtIn: "desc" }, { createdAt: "asc" }],
@@ -492,6 +560,8 @@ export function buildApp(): FastifyInstance {
         blurb: d.blurb,
         mode: d.mode,
         fields: d.fields,
+        generatesSecret: isPush(d) && d.generatesSecret,
+        setup: d.setup,
         installed: installed.has(d.kind),
         builtIn: Boolean(d.builtIn),
       }))
@@ -568,7 +638,7 @@ export function buildApp(): FastifyInstance {
 
   app.get("/detectors", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
     const cfg = await prisma.detectorConfig.findMany({ where: { tenantId: t.id } })
     const enabled = (name: string) => cfg.find((c) => c.detector === name)?.enabled ?? true
     return html(
@@ -576,43 +646,49 @@ export function buildApp(): FastifyInstance {
       detectorsPage({
         counts: await counts(t.id),
         ...withActor(req),
-        rows: [
-          {
-            detector: "denial-burst",
-            enabled: enabled("denial-burst"),
-            description:
-              "A subject refused far more than it usually is, judged against its own history — plus any action type it has never attempted before.",
-            settings: `floor ≥ ${DEFAULT_BURST_CONFIG.floor}, ratio ≥ ${DEFAULT_BURST_CONFIG.ratio}×, window ${
-              DEFAULT_BURST_CONFIG.windowMs / 60000
-            }m`,
-          },
-          {
-            detector: "sensitive-code-change",
-            enabled: enabled("sensitive-code-change"),
-            description:
-              "A pull request touching receipt verification, gateway enforcement, canonicalization or tenant isolation — including a partial six-port mirror update.",
-            settings: "component map + noise exclusions",
-          },
-          {
-            detector: "deploy-regression",
-            enabled: enabled("deploy-regression"),
-            description:
-              "A deployment followed by a shift in refusal or latency rates, correlated against whether the diff touched the implicated component.",
-            settings: "30m post-deploy window vs 24h baseline",
-          },
-        ],
+        rows: DETECTORS.map((detector) => ({
+          detector,
+          enabled: enabled(detector),
+          ...DETECTOR_INFO[detector],
+          settings: DETECTOR_SETTINGS[detector],
+        })),
       }),
     )
   })
 
+  /** The alerts page, optionally re-rendered with a form error. Never selects a secret column. */
+  async function renderAlerts(tenantId: string, req: unknown, error?: string): Promise<string> {
+    const rules = await prisma.alertRule.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        minSeverity: true,
+        channel: true,
+        targetHost: true,
+        cooldownMinutes: true,
+        active: true,
+        lastFiredAt: true,
+        lastError: true,
+        signingSecretCipher: true,
+      },
+    })
+    return alertsPage({
+      rules: rules.map(({ signingSecretCipher, ...r }) => ({
+        ...r,
+        deliverable: signingSecretCipher !== null,
+      })),
+      counts: await counts(tenantId),
+      ...withActor(req),
+      ...(error ? { error } : {}),
+    })
+  }
+
   app.get("/alerts", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
-    const rules = await prisma.alertRule.findMany({
-      where: { tenantId: t.id },
-      orderBy: { createdAt: "desc" },
-    })
-    return html(reply, alertsPage({ rules, counts: await counts(t.id), ...withActor(req) }))
+    if (!t) return html(reply, onboarding())
+    return html(reply, await renderAlerts(t.id, req))
   })
 
   app.post("/alerts/create", async (req, reply) => {
@@ -623,14 +699,37 @@ export function buildApp(): FastifyInstance {
       ...body,
       cooldownMinutes: Number(body.cooldownMinutes ?? 60),
     })
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message })
-    await createAlertRule(t.id, parsed.data)
-    return reply.redirect("/alerts", 303)
+    if (!parsed.success) {
+      return html(
+        reply.code(400),
+        await renderAlerts(t.id, req, parsed.error.issues[0]?.message ?? "Invalid rule"),
+      )
+    }
+    try {
+      const created = await createAlertRule(t.id, parsed.data)
+      // Rendered from the POST, never redirected with the secret in a URL — the same reason as
+      // connector creation: this logger writes req.url. Shown once; stored only encrypted.
+      return html(
+        reply,
+        alertCreatedPage({
+          name: parsed.data.name,
+          channel: parsed.data.channel,
+          host: created.host,
+          signingSecret: created.signingSecret,
+          counts: await counts(t.id),
+          ...withActor(req),
+        }),
+      )
+    } catch (err) {
+      if (err instanceof UnsafeTargetError)
+        return html(reply.code(400), await renderAlerts(t.id, req, err.message))
+      throw err
+    }
   })
 
   app.get("/judgment", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
 
     const q = req.query as { page?: string }
     const pageNum = Math.max(1, parseInt(q.page ?? "1", 10) || 1)
@@ -703,7 +802,7 @@ export function buildApp(): FastifyInstance {
 
   app.get("/members", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
     const rows = await prisma.member.findMany({
       where: { tenantId: t.id },
       orderBy: { createdAt: "asc" },
@@ -713,7 +812,7 @@ export function buildApp(): FastifyInstance {
 
   app.get("/settings", async (req, reply) => {
     const t = await tenant()
-    if (!t) return html(reply, onboardingPage())
+    if (!t) return html(reply, onboarding())
     return html(
       reply,
       settingsPage({
@@ -732,6 +831,8 @@ export function buildApp(): FastifyInstance {
   })
 
   const BIND = z.object({
+    // First, so a missing token is the first thing the form reports.
+    setupToken: z.string({ error: "Enter the setup token" }).min(1, "Enter the setup token").max(500),
     baseUrl: z.url(),
     clientId: z.string().min(1).max(200),
     rpId: z.string().min(1).max(253),
@@ -757,31 +858,56 @@ export function buildApp(): FastifyInstance {
     if (!parsed.success) {
       // Re-render the signup with the reason rather than a bare 400: this is the first thing anyone
       // sees, and a JSON error body on a form post is a dead end.
-      return html(reply, onboardingPage({ error: parsed.error.issues[0]?.message ?? "Invalid details" }))
+      return html(reply.code(400), onboarding(parsed.error.issues[0]?.message ?? "Invalid details"))
     }
     const d = parsed.data
     // Binding is the SIGNUP step: before it there is no tenant, and therefore nobody who could
-    // approve anything. It is the one privileged change that cannot itself be gated, which is
-    // exactly why it can only ever run once — afterwards the gate exists.
+    // approve anything. It is the one privileged change that cannot be gated by a passkey, which is
+    // why it can only ever run once — afterwards the gate exists — and why it needs SETUP_TOKEN:
+    // without it, whoever reached a fresh deployment first would bind it to their own workspace.
     const existing = await tenant()
-    const existingAdmins = existing
-      ? await prisma.member.count({ where: { tenantId: existing.id, active: true } })
-      : 0
-    if (existingAdmins === 0 && !(d.adminExternalId && d.adminLabel)) {
-      return html(
-        reply,
-        onboardingPage({
-          error:
-            "A first administrator is required — without one, nothing here could ever be approved, " +
-            "including adding an administrator.",
-        }),
-      )
-    }
     if (existing?.intygaKeyCipher) {
       // Already bound, so an administrator exists who could approve this. Repointing the workspace
       // is the one change that could hand the tenant to someone else, so it goes through the
       // signed path on /settings, never an unauthenticated form post.
       return reply.code(409).send({ error: "already connected — repointing requires an approved action" })
+    }
+
+    let expected: string | null
+    try {
+      expected = config.setupToken
+    } catch (err) {
+      req.log.error({ err: (err as Error).message }, "SETUP_TOKEN rejected")
+      return html(
+        reply.code(503),
+        onboarding("SETUP_TOKEN on the server is a placeholder or too short. Set a real value and restart."),
+      )
+    }
+    if (expected === null) {
+      return html(
+        reply.code(403),
+        onboarding(
+          "Browser setup is disabled on this server. Set SETUP_TOKEN, or bind from the command line " +
+            "with scripts/bind-workspace.ts.",
+        ),
+      )
+    }
+    if (!tokenMatches(d.setupToken, expected)) {
+      req.log.warn("setup attempted with a wrong setup token")
+      return html(reply.code(403), onboarding("That setup token is not correct."))
+    }
+
+    const existingAdmins = existing
+      ? await prisma.member.count({ where: { tenantId: existing.id, active: true } })
+      : 0
+    if (existingAdmins === 0 && !(d.adminExternalId && d.adminLabel)) {
+      return html(
+        reply.code(400),
+        onboarding(
+          "A first administrator is required — without one, nothing here could ever be approved, " +
+            "including adding an administrator.",
+        ),
+      )
     }
 
     const data = {
@@ -795,7 +921,7 @@ export function buildApp(): FastifyInstance {
     // Tenant, first administrator and the built-in Intyga connector are created together: a tenant
     // with no administrator can approve nothing, and one without its built-in connector would make
     // "the Intyga connector is built in" false on the only path that actually creates tenants.
-    await prisma.$transaction(async (tx) => {
+    const invite = await prisma.$transaction(async (tx) => {
       const t = existing
         ? await tx.tenant.update({ where: { id: existing.id }, data, select: { id: true } })
         : await tx.tenant.create({
@@ -803,12 +929,16 @@ export function buildApp(): FastifyInstance {
             select: { id: true },
           })
 
+      let issued: { token: string } | null = null
       if (d.adminExternalId && d.adminLabel) {
-        await tx.member.upsert({
+        const member = await tx.member.upsert({
           where: { tenantId_externalId: { tenantId: t.id, externalId: d.adminExternalId } },
           create: { tenantId: t.id, externalId: d.adminExternalId, label: d.adminLabel },
           update: { label: d.adminLabel, active: true },
+          select: { id: true },
         })
+        // The person completing setup is the first administrator, so they get the first invite.
+        issued = await issueInvite(tx, { tenantId: t.id, memberId: member.id })
       }
 
       const hasBuiltIn = await tx.connection.findFirst({
@@ -827,9 +957,13 @@ export function buildApp(): FastifyInstance {
           },
         })
       }
+      return issued
     })
 
-    return reply.redirect("/connectors", 303)
+    // Straight to enrolment, with the invite in the fragment: it never reaches a log or a Referer.
+    // Administrators provisioned from the CLI already hold their own invite links.
+    if (invite) return reply.redirect(`/members/enrol#invite=${invite.token}`, 303)
+    return reply.redirect("/login", 303)
   })
 
   /**
@@ -838,14 +972,15 @@ export function buildApp(): FastifyInstance {
    * POST rather than GET: it makes an outbound request and invalidates a cached token, so it is not
    * safe to prefetch or retry blindly.
    */
-  app.post("/settings/test", async (_req, reply) => {
+  app.post("/settings/test", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ ok: false, error: "no tenant" })
     try {
       const cfg = resolveGateConfig(await tenantBinding(t.id))
       return await testConnection(cfg)
     } catch (err) {
-      return { ok: false, error: (err as Error).message }
+      req.log.warn({ err: (err as Error).message }, "connection test failed")
+      return { ok: false, error: clientError(err, "the stored binding could not be loaded") }
     }
   })
 
@@ -891,8 +1026,10 @@ export function buildApp(): FastifyInstance {
         params: parsed.data.params,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : "could not open approval"
-      return reply.code(err instanceof ActionError ? 400 : 502).send({ error: message })
+      req.log.warn({ err: (err as Error).message }, "action open failed")
+      return reply
+        .code(err instanceof ActionError ? 400 : 502)
+        .send({ error: clientError(err, "could not open the approval") })
     }
   })
 
@@ -908,15 +1045,17 @@ export function buildApp(): FastifyInstance {
         assertion: parsed.data.assertion,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : "the approval was refused"
-      return reply.code(err instanceof ActionError ? 400 : 502).send({ error: message })
+      req.log.warn({ err: (err as Error).message }, "action complete failed")
+      return reply
+        .code(err instanceof ActionError ? 400 : 502)
+        .send({ error: clientError(err, "the approval could not be completed") })
     }
   })
 
   // ─── findings API ──────────────────────────────────────────────────────────────────────────────
 
+  // No `actor` field: who gave the feedback is the signed-in member, never something the body says.
   const FEEDBACK = z.object({
-    actor: z.string().min(1).max(200),
     verdict: z.enum(["useful", "not_useful", "investigating", "expected", "false_positive", "fixed"]),
     note: z.string().max(2000).optional(),
   })
@@ -936,9 +1075,11 @@ export function buildApp(): FastifyInstance {
     if (!t) return reply.code(404).send({ error: "not found" })
     const parsed = FEEDBACK.safeParse(json(req))
     if (!parsed.success) return reply.code(400).send({ error: "invalid feedback" })
+    const actor = actorOf(req)
+    if (!actor) return reply.code(401).send({ error: "not signed in" })
     const { id } = req.params as { id: string }
     const ok = await recordFeedback(t.id, id, {
-      actor: parsed.data.actor,
+      actor: actor.externalId,
       verdict: parsed.data.verdict as FeedbackVerdict,
       ...(parsed.data.note !== undefined ? { note: parsed.data.note } : {}),
     })

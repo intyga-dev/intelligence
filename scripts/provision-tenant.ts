@@ -15,6 +15,7 @@
 
 import "../src/loadenv.ts"
 import crypto from "node:crypto"
+import { enrolLink, issueInvite } from "../src/auth/invite.ts"
 import { prisma } from "../src/store/client.ts"
 import { encryptSecret } from "../src/store/crypto.ts"
 
@@ -29,11 +30,16 @@ const tenant = await prisma.tenant.upsert({
   select: { id: true },
 })
 
-await prisma.member.upsert({
+const member = await prisma.member.upsert({
   where: { tenantId_externalId: { tenantId: tenant.id, externalId: memberExternalId } },
   create: { tenantId: tenant.id, externalId: memberExternalId, label: memberExternalId },
   update: {},
+  select: { id: true, enrolledAt: true },
 })
+// Enrolment needs a one-time invite: the member id alone is not a secret (src/auth/invite.ts).
+const invite = member.enrolledAt
+  ? null
+  : await issueInvite(prisma, { tenantId: tenant.id, memberId: member.id })
 
 let connection = await prisma.connection.findFirst({
   where: { tenantId: tenant.id, kind: "intyga", builtIn: true },
@@ -69,7 +75,18 @@ const base = process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 4
 
 console.log(`
 Tenant      ${tenant.id}  (${slug})
-Member      ${memberExternalId}  — enrols a passkey via Intyga before they can approve anything
+Member      ${memberExternalId}  — enrols a passkey via Intyga before they can approve anything${
+  invite
+    ? `
+
+Enrolment link for ${memberExternalId} — works once, expires ${invite.expiresAt.toISOString()}:
+
+  ${enrolLink(base, invite.token)}
+
+  Treat it like a password: whoever opens it first becomes this administrator. It only works once
+  the workspace is bound (bind-workspace.ts). Lost it? scripts/invite-member.ts issues a new one.`
+    : ""
+}
 Connector   Intyga (built in) — ${connection.active ? "ACTIVE" : "INACTIVE"}
 
 To observe your Intyga, register this webhook endpoint in the Intyga console:

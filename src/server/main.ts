@@ -6,6 +6,21 @@ import { buildApp } from "./app.ts"
 // Entrypoint. Owns the socket and the shutdown sequence; buildApp() owns the routes, so tests can
 // drive the app with inject() without ever binding a port.
 
+// Fail closed at BOOT. config.ts resolves these lazily — deliberately, so a unit test that imports one
+// connector does not need a database URL or production secrets — which meant a misconfigured server
+// started, passed a liveness check, and threw only at the first tick or the first encrypted write.
+// The server is the one place that must refuse to start without them. Names only are logged.
+try {
+  void config.databaseUrl
+  void config.tickToken
+  void config.secretsEncKey
+  // Unset is legitimate (browser setup off); a placeholder or short value in production throws.
+  void config.setupToken
+} catch (err) {
+  console.error(`refusing to start: ${(err as Error).message}`)
+  process.exit(1)
+}
+
 const app = buildApp()
 
 async function shutdown(signal: string): Promise<void> {

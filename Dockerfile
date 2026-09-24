@@ -12,6 +12,9 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm fetch --prod=false
 COPY . .
 RUN pnpm install --frozen-lockfile --offline
+# The runtime user is `node`, not the build host's user. Normalise modes so a checkout with a
+# restrictive umask (a 600 file) cannot produce an image that crashes on its first import.
+RUN chmod -R a+rX src scripts prisma
 
 # Prisma's generated client is architecture-specific, so it is generated inside the image rather
 # than copied from the host.
@@ -33,11 +36,24 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/src ./src
 COPY --from=deps /app/prisma ./prisma
 COPY --from=deps /app/prisma.config.ts ./prisma.config.ts
+# The operator CLIs (provision-tenant, bind-workspace, invite-member) must exist where production
+# runs: they are the documented way in when browser setup is disabled (SETUP_TOKEN unset) and the
+# recovery path when the only administrator has lost their passkey. Run them with
+# `docker exec <container> node_modules/.bin/tsx scripts/<name>.ts …`.
+COPY --from=deps /app/scripts ./scripts
 COPY --from=deps /app/package.json ./package.json
 
 # node:24-slim ships a `node` user (uid 1000). Reuse it rather than minting another.
+# Prisma downloads its schema engine (what `migrate deploy` runs) lazily into node_modules on first
+# use. As the runtime user that write is denied, and it would be a network fetch in production anyway.
+# Fetch it here, in THIS stage, so the engine matches this image's OpenSSL. The URL is a placeholder:
+# `prisma version` only needs the config to load.
+RUN DIRECT_URL="postgresql://build:build@127.0.0.1:1/build" node_modules/.bin/prisma version >/dev/null
 USER node
 
 EXPOSE 4100
 # tsx runs the TypeScript sources directly, matching how the gateway in the Intyga monorepo is run.
-CMD ["pnpm", "exec", "tsx", "src/server/main.ts"]
+# tsx straight from node_modules, not `pnpm exec`: pnpm is not in this image for the runtime user,
+# so `pnpm exec` made Corepack download pnpm from the npm registry on EVERY container start — a
+# network dependency at boot (fatal on a locked-down egress) and a fetch from the registry each time.
+CMD ["node_modules/.bin/tsx", "src/server/main.ts"]

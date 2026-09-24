@@ -42,6 +42,17 @@ decision like that, say so in the comment. If it adds one, write down what you t
 database and no Fastify instance — `src/domain/`, `src/gate/` and `src/redaction/` are all testable
 as pure functions, and that is not an accident. Inject a clock rather than sleeping.
 
+The exceptions are `src/server/setup-and-enrol.test.ts`, which drives first-time setup and passkey
+enrolment through the real routes — the two paths where nobody can be asked for a passkey yet — and
+`src/alerts/delivery.test.ts`, which delivers alerts to a real local HTTP receiver. They need `TEST_DATABASE_URL` pointing at a database whose name contains `test` (they truncate every
+table), and skip without it. Test files run one at a time for that reason. CI always sets it. To run it locally:
+
+```bash
+docker compose exec postgres createdb -U intelligence intelligence_test
+DATABASE_URL=… DIRECT_URL=… pnpm db:deploy     # both set to the test database's URL
+TEST_DATABASE_URL=postgresql://intelligence:dev-local-only@localhost:5434/intelligence_test pnpm verify
+```
+
 **New connectors** implement the registry interface in `src/connectors/registry.ts` and normalize
 into `NormalizedEvent`. A connector never reaches a detector directly and never writes anywhere but
 through the store. If it is `push`, signature verification covers the **raw bytes**; re-serializing

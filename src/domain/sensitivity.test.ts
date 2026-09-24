@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import test from "node:test"
-import { classifyChangedPaths, isNoise, matchesGlob } from "./sensitivity.ts"
+import { classifyChangedPaths, isNoise, matchesGlob, PATH_MAPS } from "./sensitivity.ts"
+
+// These fixtures are real intyga-dev/core pull requests, so they run against that repository's map.
+const CORE = { map: PATH_MAPS["intyga-core"] }
 
 /** Real changed-file lists from the repository this map describes. Fixtures, not inventions. */
 const fixture = (name: string): string[] =>
@@ -39,7 +42,7 @@ test("pinned vectors are NOT noise — a changed vector means the canonical payl
 })
 
 test("real PR #100: noise is stripped before anything is judged", () => {
-  const r = classifyChangedPaths(fixture("pr-100-files.json"))
+  const r = classifyChangedPaths(fixture("pr-100-files.json"), CORE)
   assert.ok(r.excluded.length > 0, "the real PR does contain noise")
   assert.ok(
     !r.considered.some((p) => p.endsWith("CHANGELOG.md") || p.endsWith("go.sum")),
@@ -48,7 +51,7 @@ test("real PR #100: noise is stripped before anything is judged", () => {
 })
 
 test("real PR #100 is correctly read as a COMPLETE six-port mirror update", () => {
-  const r = classifyChangedPaths(fixture("pr-100-files.json"))
+  const r = classifyChangedPaths(fixture("pr-100-files.json"), CORE)
   assert.ok(r.mirror, "this PR touches mirrored ports, so the rule applies")
   assert.equal(r.mirror.vectorsUpdated, true, "it updates the pinned vectors")
   assert.deepEqual(r.mirror.missing, [], "all six ports moved together")
@@ -56,7 +59,7 @@ test("real PR #100 is correctly read as a COMPLETE six-port mirror update", () =
 })
 
 test("real PR #100 also lands on gateway enforcement and canonicalization", () => {
-  const r = classifyChangedPaths(fixture("pr-100-files.json"))
+  const r = classifyChangedPaths(fixture("pr-100-files.json"), CORE)
   const ids = r.hits.map((h) => h.component.id)
   assert.ok(ids.includes("gateway-enforcement"), "it changes apps/gateway/src/authorization.ts")
   assert.ok(ids.includes("canonicalization"))
@@ -67,7 +70,7 @@ test("real PR #100 also lands on gateway enforcement and canonicalization", () =
 test("a PARTIAL mirror update is the defect the rule exists to catch", () => {
   // One port moves, the others do not. This is the shape that ships a verifier that disagrees
   // with the producer — undetectable from any single package's tests.
-  const r = classifyChangedPaths(["packages/verify-go/verify.go"])
+  const r = classifyChangedPaths(["packages/verify-go/verify.go"], CORE)
   assert.ok(r.mirror)
   assert.equal(r.mirror.complete, false)
   assert.equal(r.mirror.vectorsUpdated, false)
@@ -85,28 +88,28 @@ test("a mirror update that forgets the pinned vectors is still incomplete", () =
     "packages/verify-java/src/main/java/com/intyga/verify/Verify.java",
     "packages/sdk-python/intyga/verify.py",
   ]
-  const r = classifyChangedPaths(all)
+  const r = classifyChangedPaths(all, CORE)
   assert.deepEqual(r.mirror?.missing, [])
   assert.equal(r.mirror?.vectorsUpdated, false)
   assert.equal(r.mirror?.complete, false, "six ports without vectors is not a complete mirror")
 })
 
 test("the mirror rule does not apply to a diff that touches no port", () => {
-  const r = classifyChangedPaths(["apps/marketing/app/page.tsx"])
+  const r = classifyChangedPaths(["apps/marketing/app/page.tsx"], CORE)
   assert.equal(r.mirror, null)
   assert.equal(r.severityFloor, null)
   assert.deepEqual(r.hits, [])
 })
 
 test("a changelog-only diff produces no finding at all", () => {
-  const r = classifyChangedPaths(["packages/verify/CHANGELOG.md", "packages/verify-go/README.md"])
+  const r = classifyChangedPaths(["packages/verify/CHANGELOG.md", "packages/verify-go/README.md"], CORE)
   assert.deepEqual(r.considered, [])
   assert.deepEqual(r.hits, [])
   assert.equal(r.mirror, null, "noise must not even trigger the mirror rule")
 })
 
 test("real PR #99 classifies without throwing and reports a floor", () => {
-  const r = classifyChangedPaths(fixture("pr-99-files.json"))
+  const r = classifyChangedPaths(fixture("pr-99-files.json"), CORE)
   assert.ok(r.considered.length > 0)
   assert.ok(r.severityFloor === null || ["medium", "high", "critical"].includes(r.severityFloor))
 })
@@ -116,11 +119,11 @@ test("a truncated path list is marked unreliable, so absence cannot be read as a
   // do not know, and reporting it as critical would be a fabricated finding.
   const paths = ["packages/verify-go/verify.go"]
 
-  const complete = classifyChangedPaths(paths)
+  const complete = classifyChangedPaths(paths, CORE)
   assert.equal(complete.mirror?.reliable, true)
   assert.ok(complete.mirror!.missing.length > 0)
 
-  const truncated = classifyChangedPaths(paths, { truncated: true })
+  const truncated = classifyChangedPaths(paths, { truncated: true, ...CORE })
   assert.equal(truncated.mirror?.reliable, false, "absence is unknowable when the list was cut off")
 })
 
@@ -136,7 +139,7 @@ test("a COMPLETE mirror is still trustworthy on a truncated list", () => {
     "packages/verify-java/src/main/java/com/intyga/verify/Verify.java",
     "packages/sdk-python/intyga_sdk/crypto.py",
   ]
-  const r = classifyChangedPaths(all, { truncated: true })
+  const r = classifyChangedPaths(all, { truncated: true, ...CORE })
   assert.equal(r.mirror?.complete, true)
   assert.deepEqual(r.mirror?.missing, [])
 })

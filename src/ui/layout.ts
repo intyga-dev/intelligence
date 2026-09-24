@@ -308,6 +308,23 @@ document.addEventListener("click", async (e) => {
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "the approval was refused");
+      if (body.invite) {
+        // Shown once: only its hash is stored. Built from this page's origin, which is the origin
+        // the passkey will be bound to. The token rides in the fragment so it never reaches a log.
+        const link = location.origin + "/members/enrol#invite=" + body.invite.token;
+        sumEl.className = "impact-low";
+        sumEl.textContent = "Enrolment link for " + body.invite.label + ". Send it to them over a channel " +
+          "you trust. It works once, is shown only now, and expires " +
+          new Date(body.invite.expiresAt).toLocaleString() + ".";
+        const box = document.createElement("input");
+        box.readOnly = true; box.value = link; box.style.width = "100%"; box.style.marginTop = "10px";
+        sumEl.appendChild(box); box.select();
+        errEl.textContent = "";
+        goEl.textContent = "Done";
+        goEl.disabled = false;
+        goEl.onclick = () => { dlg.close(); location.reload(); };
+        return;
+      }
       dlg.close();
       location.reload();
     } catch (err) {
