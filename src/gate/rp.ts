@@ -329,7 +329,8 @@ export async function testConnection(cfg: GateConfig): Promise<{ ok: true } | { 
     // key failing to parse or sign. Say that rather than echo a crypto library's text.
     return {
       ok: false,
-      error: err instanceof GateError ? err.message : "the stored private key could not sign a client assertion",
+      error:
+        err instanceof GateError ? err.message : "the stored private key could not sign a client assertion",
     }
   }
 }
