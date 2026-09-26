@@ -37,7 +37,7 @@
     "dotenv": "^18.0.1",
     "prisma": "^7.10.0",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
