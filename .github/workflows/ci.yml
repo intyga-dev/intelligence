@@ -37,7 +37,7 @@ jobs:
       # connects. A clean checkout has no .env, so without this the job failed at its first Prisma step.
       DIRECT_URL: postgresql://intelligence:ci-only@localhost:5432/intelligence_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
 
@@ -64,7 +64,7 @@ jobs:
     name: audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
