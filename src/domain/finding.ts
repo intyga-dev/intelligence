@@ -114,6 +114,7 @@ export function isDeterministic(e: Evidence): e is DeterministicEvidence {
 // ─── Finding ─────────────────────────────────────────────────────────────────────────────────────
 
 export interface Finding {
+  serviceId?: string | null
   id: string
   tenantId: string
   category: Category
@@ -158,6 +159,7 @@ export function prioritise(findings: readonly Finding[]): Finding[] {
 }
 
 export interface NewFinding {
+  serviceId?: string | null
   id: string
   tenantId: string
   category: Category

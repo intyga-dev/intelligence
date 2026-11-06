@@ -7,6 +7,22 @@ import { detectSensitiveChanges } from "./sensitiveChange.ts"
 const NOW = new Date("2026-09-23T12:00:00Z")
 const generic = () => PATH_MAPS.generic
 
+test("a source reassignment does not merge an earlier service's code finding into a new one", () => {
+  const event = pr(7, ["src/auth/login.ts"])
+  const findings = detectSensitiveChanges({
+    tenantId: "t",
+    mapFor: generic,
+    now: NOW,
+    events: [
+      { ...event, serviceId: "api" },
+      { ...event, serviceId: "worker", sourceId: "new-delivery", at: new Date(NOW.getTime() + 1) },
+    ],
+  })
+  assert.equal(findings.length, 2)
+  assert.notEqual(findings[0]?.dedupeKey, findings[1]?.dedupeKey)
+  assert.deepEqual(new Set(findings.map((f) => f.serviceId)), new Set(["api", "worker"]))
+})
+
 function pr(n: number, paths: string[], extra: Record<string, unknown> = {}, at = NOW): NormalizedEvent {
   return {
     connectionId: "c1",

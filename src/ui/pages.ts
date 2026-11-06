@@ -1,6 +1,8 @@
-import type { Evidence } from "../domain/finding.ts"
 import type { Overview } from "../store/analytics.ts"
 import type { FindingListItem } from "../store/repo.ts"
+import { findingUrl } from "../domain/findingQuery.ts"
+import { connectorHealth, type ConnectorHealthInput } from "../domain/connectorHealth.ts"
+export { findingsPage } from "./findingsPage.ts"
 import { areaChart, hBars, histogram, type Point } from "./charts.ts"
 import { ago, authPage, esc, num, page } from "./layout.ts"
 
@@ -27,7 +29,10 @@ function actionBtn(o: {
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────────────────────────
 
-export function onboardingPage(o: { error?: string; setupEnabled?: boolean } = {}): string {
+export function onboardingPage(
+  o: { error?: string; setupEnabled?: boolean; publicUrl?: string | null; consoleUrl?: string } = {},
+): string {
+  const consoleUrl = o.consoleUrl ?? "https://app.intyga.com"
   if (o.setupEnabled === false) {
     return authPage({
       title: "Connect your INTYGA workspace",
@@ -44,12 +49,19 @@ export function onboardingPage(o: { error?: string; setupEnabled?: boolean } = {
   }
   return authPage({
     title: "Connect your INTYGA workspace",
-    lede: "Intelligence is an add-on to INTYGA. It runs on the workspace you connect here.",
+    lede: "Free operational insights on your infrastructure. Sign in and approve changes with INTYGA.",
     width: "wide",
     ...(o.error ? { error: o.error } : {}),
     footnote:
       "Nothing is watched until you switch a connector on. Connecting only establishes who may sign in.",
     body: `
+<div class="authSection">
+  <h2>Start with a free INTYGA workspace</h2>
+  <p>Intelligence is a first-party integration, outside the Embedded plan gate.
+    Register your instance on its own domain, then connect it below.</p>
+  <p><a href="${esc(consoleUrl)}/login?intent=intelligence" target="_blank" rel="noopener noreferrer">Create or open your INTYGA workspace ↗</a>
+    · <a href="/demo">Explore an example incident</a></p>
+</div>
 <form method="post" action="/settings/bind">
   <div class="authSection">
     <h2>Setup token</h2>
@@ -64,7 +76,7 @@ export function onboardingPage(o: { error?: string; setupEnabled?: boolean } = {
   <div class="authSection">
     <h2>Workspace</h2>
     <p>
-      In your INTYGA console, register Intelligence as a Relying Party under <code>/platform</code>,
+      In your INTYGA console, open <a href="${esc(consoleUrl)}/integrations/intelligence" target="_blank" rel="noopener noreferrer">Intelligence integration ↗</a> and register this instance,
       then create a platform API key with <code>subjects:write</code>, <code>credentials:write</code>,
       <code>receipts:create</code> and <code>receipts:read</code>. Those scopes act only on
       Intelligence's own subjects — none of them can approve anything in INTYGA.
@@ -75,11 +87,11 @@ export function onboardingPage(o: { error?: string; setupEnabled?: boolean } = {
       <div class="field"><label>Platform client ID</label>
         <input name="clientId" required placeholder="cid_…"></div>
       <div class="field"><label>RP ID — a bare host</label>
-        <input name="rpId" required placeholder="intelligence.example.com">
+        <input name="rpId" required placeholder="intelligence.example.com" value="${esc(o.publicUrl ? new URL(o.publicUrl).hostname : "")}">
         <div class="mut" style="font-size:11.5px;margin-top:5px">
           A hostname only: no scheme, no port, no path. Use <code>localhost</code> when developing.</div></div>
       <div class="field"><label>Origin — the full URL</label>
-        <input name="origin" required placeholder="https://intelligence.example.com">
+        <input name="origin" required placeholder="https://intelligence.example.com" value="${esc(o.publicUrl ?? "")}">
         <div class="mut" style="font-size:11.5px;margin-top:5px">
           Scheme and port included, e.g. <code>http://localhost:4100</code>. Its host must equal the
           RP ID or be a subdomain of it.</div></div>
@@ -105,7 +117,7 @@ export function onboardingPage(o: { error?: string; setupEnabled?: boolean } = {
     </div>
   </div>
 
-  <button class="primary" type="submit" style="margin-top:6px">Create workspace</button>
+  <button class="primary" type="submit" style="margin-top:6px">Connect workspace and enrol passkey</button>
 </form>`,
   })
 }
@@ -131,6 +143,19 @@ export function overviewPage(o: {
     counts: o.counts,
     ...(o.actor ? { actor: o.actor } : {}),
     body: `
+${
+  s.totalConnectors === 0 || s.eventsWindow === 0
+    ? `<div class="card" style="margin-bottom:14px">
+  <h2>Get your first useful finding</h2>
+  <ol>
+    <li><a href="/services">Create a service</a>, such as your production API.</li>
+    <li><a href="/connectors">Connect deployment and error sources</a>, then assign them to that service.</li>
+    <li>Enable the connectors and <a href="/detectors">choose detectors</a>. Each change uses your INTYGA passkey.</li>
+    <li><a href="/services">Open the service timeline</a> to investigate evidence together.</li>
+  </ol><p class="mut">Want to see what you are building toward? <a href="/demo">Explore an example incident.</a></p>
+</div>`
+    : ""
+}
 <div class="grid g4" style="margin-bottom:14px">
   <div class="stat"><div class="v">${num(s.openFindings)}</div><div class="l">Open findings</div>
     <div class="sub">${s.criticalFindings > 0 ? `${num(s.criticalFindings)} critical` : "none critical"}</div></div>
@@ -160,128 +185,13 @@ export function overviewPage(o: {
           .map(
             (f) => `<tr>
               <td style="width:92px">${badge(f.severity)}</td>
-              <td><a href="/findings#${esc(f.id)}">${esc(f.title)}</a>
+              <td><a href="${esc(findingUrl(f.id))}">${esc(f.title)}</a>
                 ${f.count > 1 ? `<span class="mut"> · seen ${num(f.count)}×</span>` : ""}</td>
               <td class="mut" style="width:96px;text-align:right">${ago(f.lastSeenAt)}</td></tr>`,
           )
           .join("")}</tbody></table>`
   }
 </div>`,
-  })
-}
-
-// ─── Findings ─────────────────────────────────────────────────────────────────────────────────────
-
-function renderEvidence(e: Evidence): string {
-  switch (e.kind) {
-    case "metric": {
-      const cmp =
-        e.baseline !== undefined && e.baseline > 0
-          ? ` <span class="mut">vs ${num(e.baseline)} typical (${(e.value / e.baseline).toFixed(1)}×)</span>`
-          : e.baseline === 0
-            ? ` <span class="mut">vs none before</span>`
-            : ""
-      return `<li><span class="k">metric</span>${esc(e.label)} — <b>${num(e.value)}</b>${cmp}</li>`
-    }
-    case "eventRef":
-      return `<li><span class="k">event</span><code>${esc(e.eventKind)}</code> <span class="mut">${esc(
-        e.sourceId,
-      )} · ${ago(e.at)}</span></li>`
-    case "deployment":
-      return `<li><span class="k">deploy</span><code>${esc(e.sha.slice(0, 8))}</code> ${esc(
-        e.workflow,
-      )} <span class="mut">${esc(e.conclusion)} · ${ago(e.at)}</span></li>`
-    case "codeChange":
-      return `<li><span class="k">code</span>${esc(e.repo)}#${e.pr} <span class="mut">${e.paths.length} paths</span></li>`
-    case "correlation":
-      return `<li><span class="k">link</span>${esc(e.relation)} <span class="mut">lag ${Math.round(
-        e.lagMs / 1000,
-      )}s</span></li>`
-    case "assessment": {
-      const p = e.probability !== undefined ? `${(e.probability * 100).toFixed(0)}%` : String(e.answer)
-      const c =
-        e.confidence !== undefined
-          ? ` <span class="mut">confidence ${(e.confidence * 100).toFixed(0)}%</span>`
-          : ""
-      // Model output is styled apart from measured fact. A reader must never have to guess which is which.
-      return `<li class="model"><span class="k model">assessment</span> ${esc(e.question)} — <b>${esc(p)}</b>${c}${e.model ? ` <span class="badge" style="background:var(--panel-2);border-color:var(--brand);color:var(--brand);margin-left:6px">${esc(e.model)}</span>` : ""}</li>`
-    }
-  }
-}
-
-const VERDICTS = ["useful", "not_useful", "investigating", "expected", "false_positive", "fixed"]
-
-export function findingsPage(o: {
-  findings: FindingListItem[]
-  counts: { findings: number; alerts: number; connectors: number }
-  /** Who is signed in — rendered in the sidebar with the sign-out link. */
-  actor?: { label: string; externalId: string }
-  filter: string
-}): string {
-  const tab = (v: string, label: string) =>
-    `<a class="btn ${o.filter === v ? "primary" : ""}" href="/findings?status=${v}">${esc(label)}</a>`
-  return page({
-    title: "Findings",
-    lede: "Evidence first. Every finding names what was measured, against what baseline, and when.",
-    path: "/findings",
-    counts: o.counts,
-    ...(o.actor ? { actor: o.actor } : {}),
-    body: `
-<style>
-.f{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:12px;padding:15px 17px;margin:0 0 12px}
-.f.critical{border-left-color:var(--red)} .f.high{border-left-color:var(--amber)}
-.f.medium{border-left-color:var(--brand)} .f.low,.f.info{border-left-color:var(--border-interactive)}
-.f header{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:7px;font-size:11px}
-.f h3{font-size:15px;font-weight:650;margin:0 0 5px}
-.f .sum{color:var(--muted);font-size:13px;margin:0 0 11px}
-.f ul{list-style:none;margin:0 0 11px;padding:10px 12px;background:var(--panel-2);border-radius:8px;display:grid;gap:5px;font-size:12.5px}
-.f ul .k{display:inline-block;min-width:80px;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
-.f ul li.model{color:var(--brand)} .f ul li.model .k.model{color:var(--brand);font-weight:700}
-.f footer{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.f footer button{min-height:27px;padding:4px 9px;font-weight:500;font-size:11px;border-color:var(--border);color:var(--muted)}
-.f footer button:hover{color:var(--text);border-color:var(--border-interactive)}
-</style>
-<div class="row" style="margin-bottom:14px">
-  ${tab("open", "Open")}${tab("all", "All")}${tab("resolved", "Resolved")}${tab("dismissed", "Dismissed")}
-</div>
-${
-  o.findings.length === 0
-    ? `<div class="empty">No findings in this view.</div>`
-    : o.findings
-        .map(
-          (f) => `<article class="f ${esc(f.severity)}" id="${esc(f.id)}">
-  <header>${badge(f.severity)}<span class="mut">${esc(f.category)}</span>
-    ${f.count > 1 ? `<span class="mut">seen ${num(f.count)}×</span>` : ""}
-    <span class="mut">first ${ago(f.detectedAt)} · last ${ago(f.lastSeenAt)}</span>
-    <span class="badge right ${f.status === "new" ? "" : "off"}">${esc(f.status)}</span></header>
-  <h3>${esc(f.title)}</h3>
-  ${f.summary ? `<p class="sum">${esc(f.summary)}</p>` : ""}
-  <ul>${f.evidence.map(renderEvidence).join("")}</ul>
-  <footer>${VERDICTS.map(
-    (v) => `<button data-fb="${esc(f.id)}" data-v="${v}">${v.replace(/_/g, " ")}</button>`,
-  ).join("")}
-    ${f.feedback[0] ? `<span class="mut right">last: ${esc(f.feedback[0].verdict)} · ${esc(f.feedback[0].actor)}</span>` : ""}
-  </footer>
-</article>`,
-        )
-        .join("")
-}
-<script>
-// Feedback is not a privileged action — it records an opinion, changes nothing, and gating it
-// behind a passkey would train people to approve reflexively.
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("button[data-fb]"); if (!b) return;
-  const row = b.closest("footer"); row.querySelectorAll("button").forEach(x => x.disabled = true);
-  try {
-    const r = await fetch("/api/findings/" + b.dataset.fb + "/feedback", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ verdict: b.dataset.v }),
-    });
-    if (!r.ok) throw new Error();
-    location.reload();
-  } catch { row.querySelectorAll("button").forEach(x => x.disabled = false); }
-});
-</script>`,
   })
 }
 
@@ -325,7 +235,7 @@ export function activityPage(o: {
 
 // ─── Connectors ───────────────────────────────────────────────────────────────────────────────────
 
-export interface ConnectorRow {
+export interface ConnectorRow extends ConnectorHealthInput {
   id: string
   kind: string
   label: string
@@ -420,6 +330,8 @@ export function connectorsPage(o: {
   actor?: { label: string; externalId: string }
 }): string {
   const addable = o.available
+  const needsAttention = o.rows.filter((c) => connectorHealth(c).tone === "high").length
+  const awaiting = o.rows.filter((c) => connectorHealth(c).tone === "off").length
 
   return page({
     title: "Connectors",
@@ -443,9 +355,22 @@ export function connectorsPage(o: {
 .cat .c p{margin:0;font-size:12.5px;color:var(--muted)}
 </style>
 
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:14px">
+  <div class="stat"><div class="v">${num(o.rows.filter((c) => c.active).length)}</div><div class="l">Active sources</div></div>
+  <div class="stat"><div class="v">${num(needsAttention)}</div><div class="l">Need attention</div></div>
+  <div class="stat"><div class="v">${num(awaiting)}</div><div class="l">Awaiting setup or data</div></div>
+</div>
+<div class="card"><h2>From setup to your first finding</h2>
+  <ol class="setup"><li>Configure a source below and turn it on with your passkey.</li>
+    <li>For webhooks, send a test delivery. For polling sources, wait for the next scheduled detection tick.</li>
+    <li>Check the health status below, then <a href="/detectors">review the detectors</a> that use your sources.</li></ol>
+  <p class="mut" style="font-size:12px">An empty findings list is normal when no condition crosses a threshold. Connector health tells you whether observations are arriving.</p>
+</div>
+
 ${o.rows
-  .map(
-    (c) => `
+  .map((c) => {
+    const health = connectorHealth(c)
+    return `
 <div class="card">
   <div class="row" style="margin-bottom:9px">
     <h2>${esc(c.label)}</h2>
@@ -468,11 +393,19 @@ ${o.rows
           })
     }</span>
   </div>
+  <div style="margin-bottom:12px"><span class="badge ${health.tone}">${esc(health.label)}</span>
+    <p class="mut" style="margin:6px 0 0;font-size:12.5px">${esc(health.detail)}</p></div>
   <table><tbody>
     <tr><td class="mut" style="width:150px">Events ingested</td><td>${num(c.events)}${
       c.lastEventAt ? ` <span class="mut">· last ${ago(c.lastEventAt)}</span>` : ""
     }</td></tr>
     <tr><td class="mut">Activated</td><td>${c.activatedAt ? ago(c.activatedAt) : "—"}</td></tr>
+    ${
+      c.mode === "poll"
+        ? `<tr><td class="mut">Last poll</td><td>${c.lastPolledAt ? ago(c.lastPolledAt) : "Not yet"}</td></tr>
+      <tr><td class="mut">Last successful poll</td><td>${c.lastPollSuccessAt ? ago(c.lastPollSuccessAt) : "Not yet"}</td></tr>`
+        : ""
+    }
     ${
       c.mode === "push"
         ? `<tr><td class="mut">Webhook URL</td><td><code>${esc(c.ingestUrl)}</code></td></tr>`
@@ -487,9 +420,9 @@ ${o.rows
              Store it now. It cannot be shown again; a lost secret means creating a new connector.</div></div>`
       : ""
   }
-  ${c.setup.length > 0 && !c.active ? `<ol class="setup">${c.setup.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : ""}
-</div>`,
-  )
+  ${c.setup.length > 0 ? `<details ${!c.active ? "open" : ""}><summary>Setup instructions</summary><ol class="setup">${c.setup.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></details>` : ""}
+</div>`
+  })
   .join("")}
 
 <div class="card">
@@ -524,8 +457,12 @@ ${o.rows
             ${a.fields
               .map(
                 (f) => `<div class="field"><label>${esc(f.label)}</label>
-                  <input name="${esc(f.name)}" ${f.secret ? 'type="password" autocomplete="off"' : ""}
-                    ${f.required ? "required" : ""} placeholder="${esc(f.placeholder ?? "")}">
+                  ${
+                    a.kind === "metrics" && f.name === "queries"
+                      ? `<textarea name="queries" rows="4" placeholder="${esc(f.placeholder ?? "")}"></textarea>`
+                      : `<input name="${esc(f.name)}" ${f.secret ? 'type="password" autocomplete="off"' : ""}
+                    ${f.required ? "required" : ""} placeholder="${esc(f.placeholder ?? "")}">`
+                  }
                   ${f.help ? `<div class="mut" style="font-size:11.5px;margin-top:4px">${esc(f.help)}</div>` : ""}
                 </div>`,
               )
@@ -814,7 +751,7 @@ export function judgmentPage(o: {
                <td class="mut" style="white-space:nowrap">${ago(r.createdAt)}</td>
                <td>${
                  r.findingId
-                   ? `<a href="/findings#${esc(r.findingId)}"><b>${esc(r.findingTitle)}</b></a>`
+                   ? `<a href="${esc(findingUrl(r.findingId))}"><b>${esc(r.findingTitle)}</b></a>`
                    : `<b>${esc(r.findingTitle)}</b>`
                }</td>
                <td><span class="badge ${r.status === "DONE" ? "on" : r.status === "FAILED" ? "off" : ""}">${esc(r.status)}</span></td>

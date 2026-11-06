@@ -114,7 +114,7 @@ export function detectDenialBursts(input: BurstInput): Finding[] {
   const bySubject = new Map<string, NormalizedEvent[]>()
   for (const e of input.events) {
     if (!REFUSAL_KINDS.has(e.kind) || !e.subjectRef) continue
-    const key = `${e.connectionId}\u0000${e.subjectRef}`
+    const key = `${e.connectionId}\u0000${e.subjectRef}\u0000${e.serviceId ?? ""}`
     const list = bySubject.get(key)
     if (list) list.push(e)
     else bySubject.set(key, [e])
@@ -123,7 +123,7 @@ export function detectDenialBursts(input: BurstInput): Finding[] {
   const findings: Finding[] = []
 
   for (const [key, events] of bySubject) {
-    const [connectionId = "", subjectRef = ""] = key.split("\u0000")
+    const [connectionId = "", subjectRef = "", serviceId = ""] = key.split("\u0000")
     const times = events.map((e) => e.at.getTime())
 
     const inWindow = events.filter((e) => {
@@ -191,13 +191,14 @@ export function detectDenialBursts(input: BurstInput): Finding[] {
       })
     }
 
-    const dedupeKey = `burst:${connectionId}:${subjectRef}`
+    const dedupeKey = `burst:${connectionId}:${subjectRef}${serviceId ? `:service:${serviceId}` : ""}`
     const [first, ...rest] = evidence as [DeterministicEvidence, ...DeterministicEvidence[]]
 
     findings.push(
       createFinding({
         id: input.idFor?.(dedupeKey) ?? dedupeKey,
         tenantId: input.tenantId,
+        serviceId: inWindow.at(-1)?.serviceId ?? null,
         category: "security",
         severity,
         title: `${inWindow.length} refused operations from ${subjectRef}`,

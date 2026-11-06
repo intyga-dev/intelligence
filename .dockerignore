@@ -11,3 +11,8 @@ dist
 test/fixtures
 Dockerfile
 docker-compose.yml
+.selfhost
+*.pk8
+*.pkcs8
+*.pem
+*.key

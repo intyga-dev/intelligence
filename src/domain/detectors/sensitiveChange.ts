@@ -85,7 +85,7 @@ export function detectSensitiveChanges(input: SensitiveChangeInput): Finding[] {
     if (!(SENSITIVE_PR_KINDS as readonly string[]).includes(e.kind)) continue
     const a = prAttrs(e)
     if (!a) continue
-    const key = `${e.connectionId}\u0000${a.repo}#${a.number}`
+    const key = `${e.connectionId}\u0000${a.repo}#${a.number}\u0000${e.serviceId ?? ""}`
     const prev = latest.get(key)
     if (!prev || e.at > prev.at) latest.set(key, e)
   }
@@ -109,7 +109,7 @@ export function detectSensitiveChanges(input: SensitiveChangeInput): Finding[] {
 
     if (res.hits.length > 0 && res.severityFloor) {
       const hitPaths = [...new Set(res.hits.flatMap((h) => h.paths))]
-      const dedupeKey = `sensitive:${e.connectionId}:${pr}`
+      const dedupeKey = `sensitive:${e.connectionId}:${pr}${e.serviceId ? `:service:${e.serviceId}` : ""}`
       const evidence: EvidenceList = [
         {
           kind: "codeChange",
@@ -124,6 +124,7 @@ export function detectSensitiveChanges(input: SensitiveChangeInput): Finding[] {
         createFinding({
           id: input.idFor?.(dedupeKey) ?? dedupeKey,
           tenantId: input.tenantId,
+          serviceId: e.serviceId ?? null,
           category: "security",
           severity: res.severityFloor,
           title: `${a.merged ? "Merged" : "Open"} ${noun} ${pr} changes ${res.hits.map((h) => h.component.id).join(", ")}`,
@@ -140,7 +141,7 @@ export function detectSensitiveChanges(input: SensitiveChangeInput): Finding[] {
 
     const m = res.mirror
     if (m && !m.complete && m.reliable) {
-      const dedupeKey = `mirror:${e.connectionId}:${pr}`
+      const dedupeKey = `mirror:${e.connectionId}:${pr}${e.serviceId ? `:service:${e.serviceId}` : ""}`
       const total = m.touched.length + m.missing.length
       const evidence: EvidenceList = [
         {
@@ -156,6 +157,7 @@ export function detectSensitiveChanges(input: SensitiveChangeInput): Finding[] {
         createFinding({
           id: input.idFor?.(dedupeKey) ?? dedupeKey,
           tenantId: input.tenantId,
+          serviceId: e.serviceId ?? null,
           category: "security",
           severity: "critical",
           title:

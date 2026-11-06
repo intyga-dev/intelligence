@@ -54,7 +54,7 @@ nav .sec{color:var(--muted);font-size:10px;letter-spacing:.11em;text-transform:u
 /* Scoped to the admin shell on purpose. As a bare element selector this leaked onto the auth
    pages — whose wrapper is also a <main> — capping them at 1120px with no auto margin, so the
    "centred" card sat inside a left-aligned box and drifted left as the viewport grew. */
-.shell main{padding:26px 30px 90px;max-width:1120px}
+.shell main{padding:26px 30px 90px;max-width:1120px;min-width:0;width:100%}
 .shell .side{display:flex;flex-direction:column}
 .who{margin-top:auto;padding:14px 18px 0;border-top:1px solid var(--border)}
 .whoName{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -121,4 +121,20 @@ dialog h3{margin:0 0 6px;font-size:15px}
 .impact-high{border-left:3px solid var(--red);padding-left:11px}
 .impact-medium{border-left:3px solid var(--amber);padding-left:11px}
 .impact-low{border-left:3px solid var(--border-interactive);padding-left:11px}
+
+/* Investigating an incident on a phone still needs room for its evidence. The desktop sidebar
+   previously consumed 212px at every viewport width, squeezing the console into a sliver. */
+@media(max-width:700px){
+  .shell{display:block}
+  .shell .side{position:static;height:auto;padding:16px 0 10px;border-right:0;border-bottom:1px solid var(--border)}
+  .side .brand{padding:0 16px 12px}
+  .side nav{display:flex;flex-wrap:wrap;gap:4px;padding:0 8px}
+  .side nav .sec{display:none}
+  .side nav a{padding:8px 10px}
+  .side .who{margin-top:12px;padding:10px 16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .side .whoId{margin:0}.side .signout{margin-left:auto}
+  .shell main{padding:22px 16px 60px}
+  .g2{grid-template-columns:1fr}
+  .card{overflow-x:auto;overflow-wrap:anywhere}
+}
 `

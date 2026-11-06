@@ -22,6 +22,10 @@ import { createLimiter } from "./ratelimit.ts"
 import { allConnectors, connectorFor, isPush } from "../connectors/index.ts"
 import { NormalizeError } from "../connectors/intyga/normalize.ts"
 import { DEFAULT_BURST_CONFIG } from "../domain/detectors/denialBurst.ts"
+import { FINDING_QUERY, findingOptions } from "../domain/findingQuery.ts"
+import { listServices, serviceDetail } from "../store/services.ts"
+import { servicesPage, servicePage } from "../ui/services.ts"
+import { demoPage } from "../ui/demo.ts"
 import { DEFAULT_REGRESSION_CONFIG } from "../domain/detectors/deployRegression.ts"
 import { DETECTOR_INFO, DETECTORS, type DetectorId } from "../domain/detectors/index.ts"
 import { previewRequest, projectForJudgment } from "../redaction/project.ts"
@@ -38,6 +42,7 @@ import { prisma } from "../store/client.ts"
 import { decryptSecret, encryptSecret } from "../store/crypto.ts"
 import {
   connectionForIngest,
+  countFindings,
   type FeedbackVerdict,
   listFindings,
   markRawNormalized,
@@ -77,6 +82,7 @@ const RETENTION_DAYS = 90
 
 /** The thresholds each detector runs with, as shown on /detectors. Read from the detectors' own defaults. */
 const DETECTOR_SETTINGS: Readonly<Record<DetectorId, string>> = {
+  "metrics-health": "counter increase ≥ 1; broken objects ≥ 1; sample gap ≤ 15m",
   "denial-burst": `floor ≥ ${DEFAULT_BURST_CONFIG.floor}, ratio ≥ ${DEFAULT_BURST_CONFIG.ratio}×, window ${
     DEFAULT_BURST_CONFIG.windowMs / 60_000
   }m`,
@@ -229,7 +235,7 @@ export function buildApp(): FastifyInstance {
 
     try {
       const normalized = def.normalize({ connectionId, body: body.json, receivedAt: new Date() })
-      if (normalized) await saveEvent(connection.tenantId, normalized)
+      if (normalized) await saveEvent(connection.tenantId, normalized, connection.serviceId)
       await markRawNormalized(raw.id)
       return { ok: true, stored: normalized !== null }
     } catch (err) {
@@ -267,6 +273,7 @@ export function buildApp(): FastifyInstance {
   // route-by-route, because an allowlist is auditable in one place and a per-route flag is one
   // forgotten decorator away from an open admin console.
   const PUBLIC_EXACT = new Set([
+    "/demo",
     "/health",
     "/ready",
     "/login",
@@ -339,7 +346,12 @@ export function buildApp(): FastifyInstance {
     }
   }
   const onboarding = (error?: string): string =>
-    onboardingPage({ setupEnabled: setupEnabled(), ...(error ? { error } : {}) })
+    onboardingPage({
+      setupEnabled: setupEnabled(),
+      publicUrl: config.publicUrl,
+      consoleUrl: config.intygaConsoleUrl,
+      ...(error ? { error } : {}),
+    })
 
   app.get("/login", async (req, reply) => {
     if (actorOf(req)) return reply.redirect("/", 303)
@@ -443,6 +455,33 @@ export function buildApp(): FastifyInstance {
 
   // ─── pages ─────────────────────────────────────────────────────────────────────────────────────
 
+  app.get("/demo", async (_req, reply) => html(reply, demoPage()))
+
+  app.get("/services", async (req, reply) => {
+    const t = await tenant()
+    if (!t) return html(reply, onboarding())
+    const [services, connections, c] = await Promise.all([
+      listServices(t.id),
+      prisma.connection.findMany({
+        where: { tenantId: t.id },
+        orderBy: { label: "asc" },
+        select: { id: true, label: true, kind: true, serviceId: true },
+      }),
+      counts(t.id),
+    ])
+    return html(reply, servicesPage({ services, connections, counts: c, ...withActor(req) }))
+  })
+
+  app.get("/services/:id", async (req, reply) => {
+    const parsed = z.object({ id: z.uuid() }).safeParse(req.params)
+    if (!parsed.success) return reply.code(404).send({ error: "service not found" })
+    const t = await tenant()
+    if (!t) return html(reply, onboarding())
+    const detail = await serviceDetail(t.id, parsed.data.id)
+    if (!detail) return reply.code(404).send({ error: "service not found" })
+    return html(reply, servicePage({ detail, counts: await counts(t.id), ...withActor(req) }))
+  })
+
   app.get("/", async (req, reply) => {
     const t = await tenant()
     // A tenant can exist unbound (provision-tenant.ts runs before bind-workspace.ts); it has no
@@ -473,16 +512,22 @@ export function buildApp(): FastifyInstance {
   app.get("/findings", async (req, reply) => {
     const t = await tenant()
     if (!t) return html(reply, onboarding())
-    const filter = ((req.query as { status?: string }).status ?? "open").toLowerCase()
-    const status = filter === "all" ? undefined : filter === "open" ? ["new", "investigating"] : [filter]
-    const opts: { status?: string[]; limit?: number } = { limit: 200 }
-    if (status) opts.status = status
+    const parsed = FINDING_QUERY.safeParse(req.query)
+    if (!parsed.success) return reply.code(400).send({ error: "invalid finding filters" })
+    const query = parsed.data
+    const opts = findingOptions(query)
+    const [findings, total, c] = await Promise.all([
+      listFindings(t.id, opts),
+      countFindings(t.id, opts),
+      counts(t.id),
+    ])
     return html(
       reply,
       findingsPage({
-        findings: await listFindings(t.id, opts),
-        counts: await counts(t.id),
-        filter,
+        findings,
+        counts: c,
+        query,
+        total,
         ...withActor(req),
       }),
     )
@@ -522,17 +567,20 @@ export function buildApp(): FastifyInstance {
       where: { tenantId: t.id },
       orderBy: [{ builtIn: "desc" }, { createdAt: "asc" }],
     })
-    const base = `${req.protocol}://${req.headers.host}`
+    const base = config.publicUrl ?? `${req.protocol}://${req.headers.host}`
 
     const rows: ConnectorRow[] = await Promise.all(
       conns.map(async (c) => {
         const def = connectorFor(c.kind)
-        const [events, last] = await Promise.all([
+        const [events, last, failedDeliveries] = await Promise.all([
           prisma.event.count({ where: { connectionId: c.id } }),
           prisma.event.findFirst({
             where: { connectionId: c.id },
-            orderBy: { at: "desc" },
-            select: { at: true },
+            orderBy: { createdAt: "desc" },
+            select: { createdAt: true },
+          }),
+          prisma.rawEvent.count({
+            where: { connectionId: c.id, normalizeError: { not: null } },
           }),
         ])
         return {
@@ -543,7 +591,12 @@ export function buildApp(): FastifyInstance {
           active: c.active,
           activatedAt: c.activatedAt,
           events,
-          lastEventAt: last?.at ?? null,
+          lastEventAt: last?.createdAt ?? null,
+          lastPolledAt: c.lastPolledAt,
+          lastPollSuccessAt: c.lastPollSuccessAt,
+          lastPollError: c.lastPollError,
+          failedDeliveries,
+          supported: Boolean(def),
           ingestUrl: `${base}/ingest/${c.kind}/${c.id}`,
           mode: def?.mode ?? "push",
           setup: def?.setup ?? [],
@@ -631,7 +684,7 @@ export function buildApp(): FastifyInstance {
         connection: created.id,
         def,
         secret: generated,
-        base: `${req.protocol}://${req.headers.host}`,
+        base: config.publicUrl ?? `${req.protocol}://${req.headers.host}`,
       }),
     )
   })
@@ -1060,14 +1113,16 @@ export function buildApp(): FastifyInstance {
     note: z.string().max(2000).optional(),
   })
 
-  app.get("/api/findings", async (req) => {
+  app.get("/api/findings", async (req, reply) => {
+    // Preserve the API's historical all-status default; the console opens on actionable findings.
+    const parsed = FINDING_QUERY.safeParse({ status: "all", limit: 100, ...(req.query as object) })
+    if (!parsed.success) return reply.code(400).send({ error: "invalid finding filters" })
     const t = await tenant()
     if (!t) return { findings: [] }
-    const q = req.query as { status?: string; limit?: string }
-    const opts: { status?: string[]; limit?: number } = {}
-    if (q.status) opts.status = q.status.split(",")
-    if (q.limit) opts.limit = Math.min(Number(q.limit) || 100, 500)
-    return { findings: await listFindings(t.id, opts) }
+    const q = parsed.data
+    const opts = findingOptions(q)
+    const [findings, total] = await Promise.all([listFindings(t.id, opts), countFindings(t.id, opts)])
+    return { findings, total, page: q.page, limit: q.limit, hasMore: q.page * q.limit < total }
   })
 
   app.post("/api/findings/:id/feedback", async (req, reply) => {

@@ -77,6 +77,23 @@ model Tenant {
   alertRules  AlertRule[]
   detectors   DetectorConfig[]
   cursors     DetectorCursor[]
+  services    Service[]
+}
+
+/// A system the team operates (for example API production or the billing worker).
+model Service {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @db.Uuid
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now())
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connections Connection[]
+  events      Event[]
+  findings    Finding[]
+
+  @@unique([tenantId, name])
 }
 
 /// An Intelligence admin.
@@ -117,6 +134,8 @@ model Connection {
   /// an unknown kind is an inert row rather than a failed deploy.
   kind     String
   label    String
+  serviceId String? @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
   /// Non-secret settings: repositories to watch, deploy workflow names, detector thresholds.
   config Json @default("{}")
@@ -138,6 +157,11 @@ model Connection {
   activatedAt       DateTime?
   /// The platform receipt that authorised the current state. Provenance for "who turned this on".
   activationReceipt String?
+
+  /// Poll health contains only safe status, never upstream error bodies, URLs or credentials.
+  lastPolledAt       DateTime?
+  lastPollSuccessAt  DateTime?
+  lastPollError      String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -178,6 +202,8 @@ model RawEvent {
 model Event {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId       String   @db.Uuid
+  serviceId      String?  @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   connectionId   String   @db.Uuid
   source         String
   sourceId       String
@@ -196,6 +222,7 @@ model Event {
   @@index([connectionId, subjectRef, kind, at])
   @@index([tenantId, kind, at])
   @@index([tenantId, at])
+  @@index([tenantId, serviceId, at])
   @@index([correlationRef])
 }
 
@@ -273,6 +300,8 @@ enum FindingStatus {
 model Finding {
   id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId   String        @db.Uuid
+  serviceId  String?       @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   category   Category
   severity   Severity
   title      String
@@ -295,6 +324,7 @@ model Finding {
   @@unique([tenantId, dedupeKey])
   @@index([tenantId, status, severity, lastSeenAt])
   @@index([tenantId, detectedAt])
+  @@index([tenantId, serviceId, status, lastSeenAt])
 }
 
 /// One piece of evidence. `kind: "assessment"` is the only model-sourced variant, and the domain

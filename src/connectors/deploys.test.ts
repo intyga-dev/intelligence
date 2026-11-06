@@ -173,7 +173,10 @@ test("Cloudflare: polling filters by its own cursor, not by list order, and neve
 
 // ─── GitLab ──────────────────────────────────────────────────────────────────────────────────────
 
-test("GitLab: a merged MR carries its squash/merge commit so a deploy of it can be matched", async () => {
+test("GitLab: a merged MR carries its squash/merge commit so a deploy of it can be matched", async (t) => {
+  // The connector's first poll looks back seven days. Keep the fixture inside that window
+  // regardless of the calendar date on the machine running the suite.
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-23T12:00:00Z") })
   const mr = {
     iid: 12,
     title: "Tighten permission checks",
@@ -225,7 +228,8 @@ test("GitLab: a merged MR carries its squash/merge commit so a deploy of it can 
   ])
 })
 
-test("GitLab: a diff page that fails marks the list truncated, so absence is never trusted", async () => {
+test("GitLab: a diff page that fails marks the list truncated, so absence is never trusted", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-23T12:00:00Z") })
   globalThis.fetch = (async (url: string) => {
     const u = String(url)
     if (u.includes("/merge_requests?")) {

@@ -10,6 +10,8 @@ import { canonicalize } from "./jcs.ts"
 
 /** Privileged Intelligence actions. The value is signed, so it binds the action to its parameters. */
 export type GatedAction =
+  | "intelligence.service.create"
+  | "intelligence.connector.assign-service"
   | "intelligence.connector.activate"
   | "intelligence.connector.deactivate"
   | "intelligence.judgment.enable"

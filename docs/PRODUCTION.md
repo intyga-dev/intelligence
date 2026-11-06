@@ -3,6 +3,9 @@
 A step-by-step guide for self-hosting. Each step ends with **Done when**, a check you can run. Do
 them in order: later steps assume earlier ones.
 
+For the bundled Docker stack with automatic secret generation, migrations and scheduling, start with
+[SELF_HOST.md](SELF_HOST.md). This guide covers independently managed infrastructure.
+
 What you will run:
 
 ```
@@ -28,7 +31,8 @@ depend on it.
 
 ## 1. Prerequisites
 
-- An **INTYGA workspace**, with an administrator who can use the console's `/platform` page and create API keys.
+- An **INTYGA workspace**, with an administrator who can use **Integrations → Intelligence** and create API keys.
+  Your INTYGA deployment must include the free first-party integration; upgrade it if this page is absent.
 - A **Postgres** database for Intelligence alone, never INTYGA's database. The project is developed and
   tested against Postgres 16.
 - A place to run one container (Fly.io, Cloud Run with `--max-instances=1`, a VM, Kubernetes with
@@ -42,20 +46,20 @@ depend on it.
 
 In the INTYGA console:
 
-1. **`/platform` → register a Relying Party.** RP ID = your hostname (bare host, no scheme). Origin = `https://<hostname>`.
-   Register it **live**: test mode only admits loopback origins. It counts toward your plan's live-RP
-   allowance until the dedicated integration RP type ships.
+1. **`/integrations/intelligence` → register your domain.** RP ID = your hostname (bare host, no scheme).
+   Origin = `https://<hostname>`. Intelligence is free on every plan and outside Embedded provisioning
+   and usage counts. Public domains use this first-party registration; test mode is unnecessary.
 2. **Create a platform API key** with exactly these scopes: `subjects:write`, `credentials:write`,
    `receipts:create`, `receipts:read`. It authenticates with `private_key_jwt`. Generate the key pair
    locally, ES256 (P-256):
    ```bash
    openssl ecparam -name prime256v1 -genkey -noout -out ec.key
    openssl pkcs8 -topk8 -nocrypt -in ec.key -out rp.pk8
-   openssl ec -in ec.key -pubout -out rp.pub.pem     # upload this public key when creating the key
+   openssl ec -in ec.key -pubout -outform DER | base64 -w0   # paste this public key when creating the key
    ```
    Keep `rp.pk8` secret; only the public key goes to INTYGA.
 
-**Done when:** you have the client ID, `rp.pk8`, and the RP shows as live in `/platform`.
+**Done when:** you have the client ID, `rp.pk8`, and your domain shows as active in **Intelligence**.
 
 ## 3. Configure the environment
 
@@ -65,6 +69,8 @@ Generate each secret with `openssl rand -base64 32`. The server **refuses to sta
 deploy instead of later.
 
 Set `SETUP_TOKEN` only if you will finish setup in the browser (step 6a). Remove it afterwards.
+Set `PUBLIC_URL` to the external HTTPS origin so webhook links use the right address behind TLS.
+For a private INTYGA console, also set `INTYGA_CONSOLE_URL`.
 
 **Done when:** every uncommented variable in the template has a value in your secret store.
 

@@ -158,16 +158,18 @@ export function detectDeployRegressions(input: RegressionInput): Finding[] {
   const cfg = { ...DEFAULT_REGRESSION_CONFIG, ...input.config }
   const findings: Finding[] = []
 
-  // First observation of each signal family, for the history guard.
-  const firstSeen = new Map<string, number>()
-  for (const e of input.signals) {
-    const f = family(e)
-    if (!f) continue
-    const t = e.at.getTime()
-    if (!firstSeen.has(f) || t < (firstSeen.get(f) as number)) firstSeen.set(f, t)
-  }
-
   for (const d of input.deploys) {
+    // Service assignment is captured at ingestion. An outage in the billing worker cannot be
+    // evidence against an API deploy merely because it happened in the same half hour.
+    const serviceId = d.event.serviceId ?? null
+    const scopedSignals = input.signals.filter((e) => (e.serviceId ?? null) === serviceId)
+    const firstSeen = new Map<string, number>()
+    for (const e of scopedSignals) {
+      const f = family(e)
+      if (!f) continue
+      const t = e.at.getTime()
+      if (!firstSeen.has(f) || t < (firstSeen.get(f) as number)) firstSeen.set(f, t)
+    }
     const D = d.event.at.getTime()
     const postEnd = D + cfg.postMs
     const baseStart = D - cfg.baselineMs
@@ -175,11 +177,14 @@ export function detectDeployRegressions(input: RegressionInput): Finding[] {
     const inBase = (e: NormalizedEvent) => e.at.getTime() >= baseStart && e.at.getTime() < D
     const hasHistory = (f: string) => (firstSeen.get(f) ?? Number.POSITIVE_INFINITY) <= D - cfg.minHistoryMs
 
-    const post = input.signals.filter(inPost)
-    const base = input.signals.filter(inBase)
+    const post = scopedSignals.filter(inPost)
+    const base = scopedSignals.filter(inBase)
     const scale = cfg.postMs / cfg.baselineMs
 
-    const shipped = changeFor(d.sha, input.changes)
+    const shipped = changeFor(
+      d.sha,
+      input.changes.filter((e) => (e.serviceId ?? null) === serviceId),
+    )
     const sensitive = shipped
       ? classifyChangedPaths(shipped.attrs.paths, {
           truncated: shipped.attrs.truncated,
@@ -260,6 +265,13 @@ export function detectDeployRegressions(input: RegressionInput): Finding[] {
       }
       const rest: Evidence[] = [
         {
+          kind: "eventRef",
+          connectionId: d.event.connectionId,
+          sourceId: d.event.sourceId,
+          at: d.event.at,
+          eventKind: d.event.kind,
+        },
+        {
           kind: "metric",
           label: s.label,
           value: s.value,
@@ -282,6 +294,7 @@ export function detectDeployRegressions(input: RegressionInput): Finding[] {
         createFinding({
           id: input.idFor?.(dedupeKey) ?? dedupeKey,
           tenantId: input.tenantId,
+          serviceId,
           category: s.category,
           // The one qualitative signal: the shipped diff touched a sensitive component.
           severity: touched.length > 0 ? bump(s.severity) : s.severity,

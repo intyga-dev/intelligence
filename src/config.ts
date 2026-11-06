@@ -5,6 +5,8 @@
 // provider — see `judgment` below, where UNSET is a legitimate, documented configuration rather
 // than a misconfiguration.
 
+import { publicOrigin } from "./selfhost/setup.ts"
+
 const WEAK = new Set([
   "dev-tick-token-change-me",
   "dev-setup-token-change-me",
@@ -45,6 +47,9 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   isProdLike,
   port: num("PORT", 4100),
+  /** Canonical external origin when TLS terminates at a reverse proxy. */
+  publicUrl: process.env.PUBLIC_URL ? publicOrigin(process.env.PUBLIC_URL) : null,
+  intygaConsoleUrl: publicOrigin(process.env.INTYGA_CONSOLE_URL ?? "https://app.intyga.com"),
 
   /**
    * A getter, not a value.

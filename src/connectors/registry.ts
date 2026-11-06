@@ -32,6 +32,7 @@ export interface ConnectorContext {
   secret: string | null
   getCursor(name: string): Promise<string | null>
   setCursor(name: string, value: string): Promise<void>
+  /** Report a recoverable upstream failure. The tick marks the poll unhealthy; not for debug logs. */
   log(message: string, data?: Record<string, unknown>): void
 }
 

@@ -10,6 +10,7 @@ import {
   detectDeployRegressions,
 } from "../domain/detectors/deployRegression.ts"
 import type { DetectorId } from "../domain/detectors/index.ts"
+import { detectMetricsHealth, METRICS_MAX_GAP_MS } from "../domain/detectors/metricsHealth.ts"
 import { detectSensitiveChanges, SENSITIVE_PR_KINDS } from "../domain/detectors/sensitiveChange.ts"
 import type { Finding } from "../domain/finding.ts"
 import { type PathMap, pathMapFor } from "../domain/sensitivity.ts"
@@ -59,7 +60,15 @@ async function pollConnectors(): Promise<TickReport["polled"]> {
   const report: TickReport["polled"] = {}
   const connections = await prisma.connection.findMany({
     where: { active: true },
-    select: { id: true, tenantId: true, kind: true, label: true, config: true, secretCiphertext: true },
+    select: {
+      id: true,
+      tenantId: true,
+      kind: true,
+      label: true,
+      config: true,
+      secretCiphertext: true,
+      serviceId: true,
+    },
   })
 
   for (const c of connections) {
@@ -67,29 +76,57 @@ async function pollConnectors(): Promise<TickReport["polled"]> {
     // An unknown kind is a row for a connector this build does not ship. Inert, not fatal.
     if (!def || !isPoll(def)) continue
 
-    const ctx: ConnectorContext = {
-      connectionId: c.id,
-      tenantId: c.tenantId,
-      config: (c.config ?? {}) as Record<string, unknown>,
-      secret: c.secretCiphertext ? decryptSecret(c.secretCiphertext) : null,
-      getCursor: (name) => getCursor(c.id, name),
-      setCursor: (name, value) => setCursor(c.id, name, value),
-      log: () => {},
-    }
-
+    let reportedError = false
+    const polledAt = new Date()
     try {
+      const ctx: ConnectorContext = {
+        connectionId: c.id,
+        tenantId: c.tenantId,
+        config: (c.config ?? {}) as Record<string, unknown>,
+        secret: c.secretCiphertext ? decryptSecret(c.secretCiphertext) : null,
+        getCursor: (name) => getCursor(c.id, name),
+        setCursor: (name, value) => setCursor(c.id, name, value),
+        // Poll connectors report recoverable request failures here so other resources can continue.
+        // Persist only a safe summary: provider bodies and URLs can include credentials.
+        log: () => {
+          reportedError = true
+        },
+      }
+
+      if (
+        def.fields.some(
+          (f) => f.required && !(f.secret ? ctx.secret : String(ctx.config[f.name] ?? "").trim()),
+        )
+      ) {
+        throw new Error("missing connector configuration")
+      }
       const events = await def.poll(ctx)
       let stored = 0
       for (const e of events) {
         // saveEvent is an upsert on (connectionId, sourceId), so a connector that re-returns an
         // event after a partial tick costs a no-op write rather than a duplicate.
-        await saveEvent(c.tenantId, e)
+        await saveEvent(c.tenantId, e, c.serviceId)
         stored++
       }
-      report[c.label] = { fetched: events.length, stored }
+      report[c.label] = reportedError ? { error: true } : { fetched: events.length, stored }
     } catch {
+      reportedError = true
       report[c.label] = { error: true }
     }
+    await prisma.connection
+      .update({
+        where: { id: c.id },
+        data: {
+          lastPolledAt: polledAt,
+          lastPollError: reportedError
+            ? "The last poll reported a failure. Check the endpoint, read-only credentials and provider rate limits. Some events may still have been ingested."
+            : null,
+          ...(!reportedError ? { lastPollSuccessAt: polledAt } : {}),
+        },
+      })
+      .catch(() => {
+        report[c.label] = { error: true }
+      })
   }
   return report
 }
@@ -145,7 +182,7 @@ export async function runDetectors(now = new Date()): Promise<TickReport> {
 
     // Switched off means NOT WATCHED, not deferred: the event-driven detectors' marks keep moving,
     // so switching one back on does not replay everything that happened while it was off.
-    for (const id of ["sensitive-code-change", "deploy-regression"] as const) {
+    for (const id of ["sensitive-code-change", "deploy-regression", "metrics-health"] as const) {
       if (off.has(id)) await setDetectorCursor(tenantId, id, now)
     }
 
@@ -157,6 +194,25 @@ export async function runDetectors(now = new Date()): Promise<TickReport> {
         })
         const found = detectDenialBursts({ tenantId, events, now })
         return { found: found.length, created: await persist(tenantId, found) }
+      })
+    }
+
+    if (!off.has("metrics-health")) {
+      await run("metrics-health", async () => {
+        const since = new Date(now.getTime() - METRICS_MAX_GAP_MS)
+        const after = (await getDetectorCursor(tenantId, "metrics-health")) ?? since
+        const [events, history] = await Promise.all([
+          loadIngestedEvents(tenantId, { kinds: ["metrics.sample"], after, until: now }),
+          loadEvents(tenantId, {
+            kinds: ["metrics.sample"],
+            since: new Date(since.getTime() - METRICS_MAX_GAP_MS),
+            until: now,
+          }),
+        ])
+        const found = detectMetricsHealth({ tenantId, events, history, now })
+        const created = await persist(tenantId, found)
+        await setDetectorCursor(tenantId, "metrics-health", now)
+        return { found: found.length, created }
       })
     }
 

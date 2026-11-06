@@ -65,6 +65,62 @@ function defineAction<S extends z.ZodTypeAny>(def: ActionDef<S>): ActionDef<S> {
 const connectorParams = z.object({ connectionId: z.uuid() })
 
 export const ACTIONS = {
+  "intelligence.service.create": defineAction({
+    impact: "low",
+    schema: z.object({
+      name: z.string().trim().min(1).max(80),
+      description: z.string().trim().max(300).default(""),
+    }),
+    summary: (p) => `Create the service “${p.name}” to group its sources and findings.`,
+    run: async (tenantId, p) => {
+      await prisma.service.create({ data: { tenantId, name: p.name, description: p.description } })
+    },
+  }),
+  "intelligence.connector.assign-service": defineAction({
+    impact: "medium",
+    schema: z.object({ connectionId: z.uuid(), serviceId: z.uuid().nullable() }),
+    summary: (p) =>
+      p.serviceId
+        ? `Assign source ${p.connectionId} to service ${p.serviceId}. Group its unassigned history and correlate future observations within this service.`
+        : `Remove the service assignment from source ${p.connectionId}. Previously grouped history stays with its service.`,
+    run: async (tenantId, p) => {
+      await prisma.$transaction(async (tx) => {
+        if (
+          p.serviceId &&
+          !(await tx.service.findFirst({ where: { id: p.serviceId, tenantId }, select: { id: true } }))
+        ) {
+          throw new Error("service not found in this tenant")
+        }
+        const updated = await tx.connection.updateMany({
+          where: { id: p.connectionId, tenantId },
+          data: { serviceId: p.serviceId },
+        })
+        if (updated.count !== 1) throw new Error("connector not found in this tenant")
+        if (p.serviceId) {
+          // Fill unassigned history only. Reassigning a source never moves earlier incidents.
+          await tx.event.updateMany({
+            where: { tenantId, connectionId: p.connectionId, serviceId: null },
+            data: { serviceId: p.serviceId },
+          })
+          await tx.finding.updateMany({
+            where: {
+              tenantId,
+              serviceId: null,
+              OR: [
+                {
+                  evidence: {
+                    some: { kind: "eventRef", data: { path: ["connectionId"], equals: p.connectionId } },
+                  },
+                },
+                { dedupeKey: { startsWith: `regression:${p.connectionId}:` } },
+              ],
+            },
+            data: { serviceId: p.serviceId },
+          })
+        }
+      })
+    },
+  }),
   "intelligence.connector.activate": defineAction({
     impact: "medium",
     schema: connectorParams,

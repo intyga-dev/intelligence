@@ -14,16 +14,21 @@ evidence-backed findings** that genuinely need human attention.
 
 ## Read this first
 
-**Intelligence is not standalone. It requires an INTYGA workspace and will not run without one.**
+**Free to self-host. INTYGA sign-in is required.** Intelligence is a first-party integration, outside
+the Embedded plan gate, including on your own public domain. Start with the
+[self-hosting walkthrough](docs/SELF_HOST.md) for Docker, local secret generation and guided setup.
 
 It has no authentication of its own. Administrators are INTYGA platform subjects who enrol a passkey
 on Intelligence's origin, and every privileged change — turning on a connector, enabling the
 judgment provider, purging data — is a hash-only signing ceremony against that passkey, executed
 through INTYGA. There is no local admin account, no password fallback and no environment variable
-that turns the gate off. Without an INTYGA workspace this repository will let you read the code and
-run the tests, and nothing else.
+that turns the gate off. Before connecting a workspace you can explore the static example incident
+at `/demo`. Your own observations stay behind INTYGA authentication.
 
-**Status: `0.1.0`, early.** One deterministic detector ships today (see
+Group deployment, error and incident sources into **Services** to investigate their findings and
+recent observations together. Deploy regressions use only signals from the same service.
+
+**Status: `0.1.0`, early.** Four deterministic detectors ship today (see
 [Detectors](#deterministic-detectors)); the connectors are working integrations but should be read
 as reference implementations rather than a supported product surface. There is no support SLA.
 Issues and pull requests are welcome and will be read; nothing here is promised on a timeline.
@@ -135,7 +140,7 @@ Detectors never observe raw vendor APIs.
 | :--- | :--- | :--- |
 | **INTYGA** | `push` (webhook) | Authorization approvals, refusals, expiries and approval latency. |
 | **GitHub** | `poll` (API) | Pull requests with changed file paths, CI workflow outcomes, deploy runs. |
-| **Metrics** | `poll` (Prometheus) | Samples of any PromQL query (defaults: INTYGA auth failures, rate limits, signature rejections, ledger health). Stored; not yet read by a detector. |
+| **Metrics** | `poll` (Prometheus) | Samples of PromQL queries. Known INTYGA failure counters and ledger-integrity gauges feed `metrics-health`. |
 | **Custom webhook** | `push` (signed JSON) | Anything you send it. `deployment`, `error` and `crash` events feed deploy-regression. |
 | **Sentry** | `push` (webhook) | Post-release exception spikes and regression indicators. |
 | **Vercel** | `push` (webhook) | Production and preview deployment lifecycles mapped to commit SHAs. |
@@ -155,7 +160,7 @@ Python, a GitHub Actions snippet, and the rules a connector has to follow.
 
 ## Deterministic detectors
 
-Three detectors ship. Each is a pure function over stored events, runs on every detection tick, and
+Four detectors ship. Each is a pure function over stored events, runs on every detection tick, and
 can be switched off on `/detectors`. Switching one off is a passkey-signed action. The severity and
 the reason a finding exists are always computed; the optional model can only adjust them afterwards.
 
@@ -187,7 +192,18 @@ Noise guards are part of each detector, not tuning left to you:
 * **History.** A newly connected source does not make the next deploy look like a regression.
 * **Volume.** A refusal *rate* needs enough approvals to mean something.
 
-The Prometheus connector stores samples, but no detector reads them yet.
+* **`metrics-health`** — detects increases in the default INTYGA audit-write, replay-guard,
+  approval-requirement, notification and billing-refusal counters, plus positive broken-block or
+  broken-checkpoint gauges. Counter samples must belong to the same source and label set and be no
+  more than 15 minutes apart. Initial lifetime values, counter resets and longer collection gaps
+  do not trigger findings. Only newly ingested samples from the last 15 minutes are evaluated;
+  rerunning a completed tick does not count them again. **Needs:** the Metrics connector with bare
+  metric queries (the defaults work). Transformed PromQL expressions, age/backlog gauges and other
+  metrics are stored without automatic interpretation.
+  ([source](src/domain/detectors/metricsHealth.ts))
+
+Enter custom PromQL expressions one per line. Comma-separated bare metric names remain supported;
+commas inside selectors or functions are preserved.
 
 Adding a detector: a pure function in `src/domain/detectors/`, an entry in
 `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. Failures are isolated per
@@ -197,8 +213,9 @@ detector, so a new one cannot take the working ones down with it.
 
 ## Quickstart
 
-*Local evaluation. For a real deployment — TLS, migrations, the tick scheduler, backups — follow
-[docs/PRODUCTION.md](docs/PRODUCTION.md) and start from [`.env.production.example`](.env.production.example).*
+*Local evaluation. For the bundled Docker stack, follow [docs/SELF_HOST.md](docs/SELF_HOST.md).
+For independently managed infrastructure, use [docs/PRODUCTION.md](docs/PRODUCTION.md)
+and [`.env.production.example`](.env.production.example).*
 
 ### Prerequisites
 
@@ -286,6 +303,28 @@ enrolment link once.
 3. Enter a label (e.g. `INTYGA Staging`, `GitHub Production`).
 4. Copy the unique **webhook ingestion URL** and one-time **signing secret** into your provider.
 5. Click **Turn on** — this requires an administrator passkey tap, because it starts a data flow.
+
+The connector page distinguishes setup pending, awaiting a first poll or delivery, successful
+polling, overdue polling (no poll for 15 minutes), and ingestion errors. Poll failures retain a safe
+summary and the time of the last successful poll. A successful empty poll is normal; webhook
+silence is not treated as an outage. Setup instructions remain available after activation.
+
+## Investigating findings
+
+On **Findings**, combine status, severity and category filters with a search over titles, summaries
+or a finding ID. Choose highest priority or most recently seen. Priority is applied before
+pagination so an older critical finding cannot be hidden behind newer low-severity results.
+Filters and page numbers live in the URL for bookmarking and sharing.
+
+Expand changed paths directly in code evidence. Add an optional investigation note, then choose
+**investigating**, **fixed**, **expected**, or another feedback action. The most recent five actions
+show who recorded them and their notes. Notes are attributed to the signed-in member. Finding-title
+links include closed findings, so they keep working after resolution or dismissal.
+
+`GET /api/findings` supports `status` (`open`, `all`, or comma-separated statuses), `severity`,
+`category`, `q`, `sort` (`priority` or `recent`), `page`, and `limit` (1–500). The response includes
+`findings`, `total`, `page`, `limit`, and `hasMore`. The API defaults to all statuses and 100 results;
+the console defaults to open findings and 25 per page. Invalid filters return HTTP 400.
 
 ---
 
@@ -378,6 +417,8 @@ and turning it on requires an administrator passkey signature.
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `PORT` | HTTP port the console and ingest API bind to. | `4100` |
+| `PUBLIC_URL` | External HTTPS origin used for setup defaults and webhook links behind a reverse proxy. | Request origin |
+| `INTYGA_CONSOLE_URL` | INTYGA console for signup and free Intelligence registration. | `https://app.intyga.com` |
 | `DATABASE_URL` | PostgreSQL connection string. | Required |
 | `DIRECT_URL` | Direct connection string for Prisma migrations (bypasses any pooler). | Required |
 | `TICK_TOKEN` | Bearer token protecting `POST /internal/tick`. | Required in production |

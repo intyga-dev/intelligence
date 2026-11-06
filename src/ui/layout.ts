@@ -36,6 +36,7 @@ const NAV: { section: string; items: { href: string; label: string; key?: keyof 
     section: "Watch",
     items: [
       { href: "/", label: "Overview" },
+      { href: "/services", label: "Services" },
       { href: "/findings", label: "Findings", key: "findings" },
       { href: "/activity", label: "Activity" },
     ],

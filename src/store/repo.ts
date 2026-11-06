@@ -1,5 +1,6 @@
 import type { NormalizedEvent } from "../connectors/types.ts"
-import type { Evidence, Finding, Severity } from "../domain/finding.ts"
+import type { Category, Evidence, Finding, Severity } from "../domain/finding.ts"
+import type { Prisma } from "../generated/prisma/client.ts"
 import { prisma } from "./client.ts"
 
 // The query layer. This database has one trusted writer and no row-level security, so tenant
@@ -55,11 +56,25 @@ export async function markRawNormalized(id: string, error?: string): Promise<voi
 }
 
 /** Idempotent normalized insert, keyed on the source's own event id. */
-export async function saveEvent(tenantId: string, e: NormalizedEvent): Promise<void> {
+export async function saveEvent(
+  tenantId: string,
+  e: NormalizedEvent,
+  assignedService?: string | null,
+): Promise<void> {
+  const serviceId =
+    assignedService === undefined
+      ? (
+          await prisma.connection.findFirstOrThrow({
+            where: { id: e.connectionId, tenantId },
+            select: { serviceId: true },
+          })
+        ).serviceId
+      : assignedService
   await prisma.event.upsert({
     where: { connectionId_sourceId: { connectionId: e.connectionId, sourceId: e.sourceId } },
     create: {
       tenantId,
+      serviceId,
       connectionId: e.connectionId,
       source: e.source,
       sourceId: e.sourceId,
@@ -93,6 +108,7 @@ export async function loadEvents(
     take: opts.limit ?? 50_000,
   })
   return rows.map((r) => ({
+    serviceId: r.serviceId,
     connectionId: r.connectionId,
     source: r.source,
     sourceId: r.sourceId,
@@ -135,6 +151,7 @@ export async function upsertFinding(f: Finding): Promise<{ id: string; isNew: bo
       const created = await tx.finding.create({
         data: {
           tenantId: f.tenantId,
+          serviceId: f.serviceId ?? null,
           category: f.category,
           severity: f.severity,
           title: f.title,
@@ -160,6 +177,7 @@ export async function upsertFinding(f: Finding): Promise<{ id: string; isNew: bo
       where: { id: existing.id },
       data: {
         severity,
+        ...(f.serviceId !== undefined ? { serviceId: f.serviceId } : {}),
         title: f.title,
         summary: f.summary ?? null,
         lastSeenAt: f.lastSeenAt,
@@ -174,6 +192,7 @@ export async function upsertFinding(f: Finding): Promise<{ id: string; isNew: bo
 }
 
 export interface FindingListItem {
+  serviceId: string | null
   id: string
   category: string
   severity: Severity
@@ -184,51 +203,84 @@ export interface FindingListItem {
   count: number
   status: string
   evidence: Evidence[]
-  feedback: { verdict: string; actor: string; createdAt: Date }[]
+  feedback: { verdict: string; actor: string; note: string | null; createdAt: Date }[]
 }
 
-const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"] as const
+interface FindingOptions {
+  serviceId?: string
+  status?: string[]
+  severity?: Severity
+  category?: Category
+  query?: string
+  sort?: "priority" | "recent"
+  limit?: number
+  offset?: number
+}
+
+function findingsWhere(tenantId: string, opts: FindingOptions): Prisma.FindingWhereInput {
+  const query = opts.query?.trim()
+  return {
+    tenantId,
+    ...(opts.serviceId ? { serviceId: opts.serviceId } : {}),
+    ...(opts.status?.length ? { status: { in: opts.status as never[] } } : {}),
+    ...(opts.severity ? { severity: opts.severity } : {}),
+    ...(opts.category ? { category: opts.category } : {}),
+    ...(query
+      ? {
+          OR: [
+            { title: { contains: query, mode: "insensitive" as const } },
+            { summary: { contains: query, mode: "insensitive" as const } },
+            ...(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query)
+              ? [{ id: query }]
+              : []),
+          ],
+        }
+      : {}),
+  }
+}
+
+export async function countFindings(tenantId: string, opts: FindingOptions = {}): Promise<number> {
+  return prisma.finding.count({ where: findingsWhere(tenantId, opts) })
+}
 
 /** The findings list, most severe first. The product surface. */
-export async function listFindings(
-  tenantId: string,
-  opts: { status?: string[]; limit?: number } = {},
-): Promise<FindingListItem[]> {
+export async function listFindings(tenantId: string, opts: FindingOptions = {}): Promise<FindingListItem[]> {
   const rows = await prisma.finding.findMany({
-    where: {
-      tenantId,
-      ...(opts.status?.length ? { status: { in: opts.status as never[] } } : {}),
-    },
+    where: findingsWhere(tenantId, opts),
     include: {
       evidence: { orderBy: { ordinal: "asc" } },
       feedback: { orderBy: { createdAt: "desc" }, take: 5 },
     },
-    orderBy: { lastSeenAt: "desc" },
+    // Severity's declaration order is info → critical. Order DESC in the database BEFORE
+    // limiting: sorting a capped recent slice in JS can hide an older critical finding entirely.
+    orderBy: [
+      ...(opts.sort === "recent" ? [] : [{ severity: "desc" as const }]),
+      { lastSeenAt: "desc" },
+      { id: "asc" },
+    ],
     take: opts.limit ?? 100,
+    skip: opts.offset ?? 0,
   })
 
-  // Severity is an enum, and Postgres orders enums by declaration order — which here runs
-  // info → critical, the opposite of what the page wants. Sorting in JS over a capped list is
-  // cheaper to read than a CASE expression and cannot silently invert if the enum is reordered.
-  return rows
-    .map((r) => ({
-      id: r.id,
-      category: r.category,
-      severity: r.severity as Severity,
-      title: r.title,
-      summary: r.summary,
-      detectedAt: r.detectedAt,
-      lastSeenAt: r.lastSeenAt,
-      count: r.count,
-      status: r.status,
-      evidence: r.evidence.map((e) => e.data as unknown as Evidence),
-      feedback: r.feedback.map((f) => ({ verdict: f.verdict, actor: f.actor, createdAt: f.createdAt })),
-    }))
-    .sort(
-      (a, b) =>
-        SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
-        b.lastSeenAt.getTime() - a.lastSeenAt.getTime(),
-    )
+  return rows.map((r) => ({
+    id: r.id,
+    serviceId: r.serviceId,
+    category: r.category,
+    severity: r.severity as Severity,
+    title: r.title,
+    summary: r.summary,
+    detectedAt: r.detectedAt,
+    lastSeenAt: r.lastSeenAt,
+    count: r.count,
+    status: r.status,
+    evidence: r.evidence.map((e) => e.data as unknown as Evidence),
+    feedback: r.feedback.map((f) => ({
+      verdict: f.verdict,
+      actor: f.actor,
+      note: f.note,
+      createdAt: f.createdAt,
+    })),
+  }))
 }
 
 export type FeedbackVerdict =
@@ -306,6 +358,7 @@ export async function loadIngestedEvents(
 }
 
 function toNormalized(r: {
+  serviceId: string | null
   connectionId: string
   source: string
   sourceId: string
@@ -316,6 +369,7 @@ function toNormalized(r: {
   attrs: unknown
 }): NormalizedEvent {
   return {
+    serviceId: r.serviceId,
     connectionId: r.connectionId,
     source: r.source,
     sourceId: r.sourceId,
@@ -370,6 +424,6 @@ export async function activeConnections(kind?: "intyga" | "github") {
 export async function connectionForIngest(id: string, kind: string) {
   return prisma.connection.findFirst({
     where: { id, kind },
-    select: { id: true, tenantId: true, secretCiphertext: true, active: true },
+    select: { id: true, tenantId: true, secretCiphertext: true, active: true, serviceId: true },
   })
 }
