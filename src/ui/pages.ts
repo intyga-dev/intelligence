@@ -29,121 +29,18 @@ function actionBtn(o: {
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────────────────────────
 
-export type OnboardingValues = Partial<
-  Record<
-    | "setupToken"
-    | "baseUrl"
-    | "consoleUrl"
-    | "workspaceId"
-    | "origin"
-    | "oidcClientId"
-    | "serviceClientId"
-    | "serviceSecret"
-    | "trustAnchor",
-    string
-  >
->
-
-export function onboardingPage(
-  o: {
-    error?: string
-    setupEnabled?: boolean
-    publicUrl?: string | null
-    consoleUrl?: string
-    values?: OnboardingValues
-  } = {},
-): string {
-  const consoleUrl = o.consoleUrl ?? "https://app.intyga.com"
-  const value = (name: keyof OnboardingValues, fallback = "") => esc(o.values?.[name] ?? fallback)
-  if (o.setupEnabled === false) {
-    return authPage({
-      title: "Connect your INTYGA workspace",
-      lede: "This instance is not connected to an INTYGA workspace yet.",
-      ...(o.error ? { error: o.error } : {}),
-      footnote: "Browser setup is off because SETUP_TOKEN is not set on the server.",
-      body: `
-<p>
-  Browser setup is disabled on this server. Whoever operates it can either set
-  <code>SETUP_TOKEN</code> and restart, then complete setup here, or bind the workspace from the
-  command line with <code>scripts/bind-workspace.ts</code>.
-</p>`,
-    })
-  }
-  const callback = o.publicUrl ? `${o.publicUrl}/auth/callback` : "https://<this instance>/auth/callback"
+export function onboardingPage(o: { error?: string } = {}): string {
   return authPage({
-    title: "Connect your INTYGA workspace",
-    lede: "Free operational insights on your infrastructure. Your team signs in and approves changes with INTYGA.",
-    width: "wide",
+    title: "INTYGA connection is not configured",
+    lede: "The operator configures this instance through its deployment environment.",
     ...(o.error ? { error: o.error } : {}),
+    body: `<p>Set the INTYGA gateway and console URLs, workspace ID, service client ID and secret,
+      and <code>PUBLIC_URL</code> in the server environment. Mount the exported trust anchor and set
+      <code>INTYGA_TRUST_ANCHOR_FILE</code> to its path, then restart Intelligence.</p>
+      <p>Register a member application in INTYGA to sign in and approve here with an application passkey. OIDC is optional.</p>
+      <p><a href="/demo">Explore an example incident</a></p>`,
     footnote:
-      "Intelligence has no accounts of its own: your INTYGA workspace's members are its users, and its " +
-      "administrators are the workspace's administrators.",
-    body: `
-<div class="authSection">
-  <p>Three things from your INTYGA console, then whoever is an administrator there signs in here.</p>
-  <p><a href="${esc(consoleUrl)}/login?intent=intelligence" target="_blank" rel="noopener noreferrer">Create or open your INTYGA workspace ↗</a>
-    · <a href="/demo">Explore an example incident</a></p>
-</div>
-<form method="post" action="/settings/bind">
-  <div class="authSection">
-    <h2>Setup token</h2>
-    <p>
-      The <code>SETUP_TOKEN</code> value from this server's environment. It proves you operate this
-      instance — without it, whoever found a fresh deployment first could claim it.
-    </p>
-    <div class="field"><label>Setup token</label>
-      <input name="setupToken" type="password" required autocomplete="off" value="${value("setupToken")}"></div>
-  </div>
-  <div class="authSection">
-    <h2>Workspace</h2>
-    <div class="grid g2">
-      <div class="field"><label>INTYGA gateway URL</label>
-        <input name="baseUrl" required placeholder="https://api.intyga.com" value="${value("baseUrl")}"></div>
-      <div class="field"><label>INTYGA console URL</label>
-        <input name="consoleUrl" required placeholder="https://app.intyga.com" value="${value("consoleUrl", consoleUrl)}"></div>
-      <div class="field"><label>Workspace ID</label>
-        <input name="workspaceId" required placeholder="shown at the top of API Keys in the console" value="${value("workspaceId")}"></div>
-      <div class="field"><label>This instance's origin</label>
-        <input name="origin" placeholder="https://intelligence.example.com" value="${value("origin", o.publicUrl ?? "")}">
-        <div class="mut" style="font-size:11.5px;margin-top:5px">
-          Scheme and port included. Sign-in returns here.</div></div>
-    </div>
-  </div>
-  <div class="authSection">
-    <h2>1 · Sign-in — an OIDC client</h2>
-    <p>
-      In the console, <b>Integrations → App sign-in</b>: register this instance with the redirect URI
-      <code>${esc(callback)}</code>. Paste the client ID it shows (there is no secret).
-    </p>
-    <div class="field"><label>OIDC client ID</label>
-      <input name="oidcClientId" required placeholder="oidc_…" value="${value("oidcClientId")}"></div>
-  </div>
-  <div class="authSection">
-    <h2>2 · Approvals — a service key</h2>
-    <p>
-      In the console, <b>API Keys → Create a service and its key</b>. The key can only <i>ask</i> for
-      an approval; every privileged change here is then approved under your workspace's rules by its
-      members, at the console or on their phone.
-    </p>
-    <div class="grid g2">
-      <div class="field"><label>Service client ID</label>
-        <input name="serviceClientId" required placeholder="cid_…" value="${value("serviceClientId")}"></div>
-      <div class="field"><label>Service secret</label>
-        <input name="serviceSecret" type="password" required autocomplete="off" value="${value("serviceSecret")}">
-        <div class="mut" style="font-size:11.5px;margin-top:5px">Encrypted at rest and never returned by the API.</div></div>
-    </div>
-  </div>
-  <div class="authSection">
-    <h2>3 · Trust — the approvers' keys</h2>
-    <p>
-      In the console, <b>Approval Rules → Export trust anchor</b>. Intelligence verifies every receipt
-      against these keys itself, offline, before anything runs. Re-export it when approvers change.
-    </p>
-    <div class="field"><label>Trust anchor (JSON)</label>
-      <textarea name="trustAnchor" rows="4" required placeholder='{"type":"intyga-trust-anchor", …}'>${value("trustAnchor")}</textarea></div>
-  </div>
-  <button class="primary" type="submit" style="margin-top:6px">Connect workspace</button>
-</form>`,
+      "Connection settings and approval credentials are never stored in the database or editable here.",
   })
 }
 
@@ -888,7 +785,7 @@ export function membersPage(o: {
     Add them to your INTYGA workspace — <a href="${esc(o.consoleUrl)}/directory" target="_blank" rel="noopener noreferrer">Directory ↗</a>.
     Workspace <b>administrators</b> can change anything here and approve privileged actions under the
     workspace's rules; <b>members</b> can read findings and services. A person's role is read from
-    INTYGA at each sign-in; removing them from the workspace ends their access here at the next request.
+    INTYGA at embedded or OIDC sign-in. Sessions last up to 12 hours. Non-embedded approval sign-in explicitly grants the approved browser administrator access.
   </p>
 </div>`,
   })
@@ -896,14 +793,13 @@ export function membersPage(o: {
 
 export function settingsPage(o: {
   binding: {
-    baseUrl: string | null
-    consoleUrl: string | null
-    workspaceId: string | null
+    baseUrl: string
+    consoleUrl: string
+    workspaceId: string
+    embeddedApplicationId?: string
     oidcClientId: string | null
-    serviceClientId: string | null
-    hasSecret: boolean
-    trustAnchorAt: Date | null
-    origin: string | null
+    serviceClientId: string
+    origin: string
   }
   retentionDays: number
   counts: { findings: number; alerts: number; connectors: number }
@@ -911,10 +807,6 @@ export function settingsPage(o: {
   actor?: { label: string; externalId: string }
 }): string {
   const b = o.binding
-  const bound = Boolean(b.baseUrl && b.oidcClientId)
-  // Repointing the workspace is an APPROVED action — you must still be who you were to say who you
-  // will be. The secret and the trust anchor are never part of the signed parameters; see the action
-  // registry for why. They are replaced below, by an administrator, without a signature.
   return page({
     title: "Settings",
     lede: "The INTYGA workspace this service runs on, and what it keeps.",
@@ -923,74 +815,33 @@ export function settingsPage(o: {
     ...(o.actor ? { actor: o.actor } : {}),
     body: `
 <div class="card">
-  <div class="row" style="margin-bottom:4px">
-    <h2>INTYGA workspace</h2>
-    <span class="badge ${bound ? "on" : "off"}">${bound ? "connected" : "not connected"}</span>
-  </div>
-  <p class="mut" style="font-size:13px;margin:0 0 14px">
-    Intelligence has no login of its own — this workspace's members sign in here with INTYGA, its
-    administrators administer Intelligence, and every privileged change is approved under its rules.
-    Repointing it is the one change that could hand this tenant to someone else, so it requires
-    approval from the workspace you are leaving.
-  </p>
-  <table style="margin-bottom:12px">
-    <tr><th>Gateway</th><td><code>${esc(b.baseUrl ?? "—")}</code></td></tr>
-    <tr><th>Console</th><td><code>${esc(b.consoleUrl ?? "—")}</code></td></tr>
-    <tr><th>Workspace ID</th><td><code>${esc(b.workspaceId ?? "—")}</code></td></tr>
-    <tr><th>OIDC client</th><td><code>${esc(b.oidcClientId ?? "—")}</code> · redirect <code>${esc(
-      b.origin ? `${b.origin}/auth/callback` : "—",
-    )}</code></td></tr>
-    <tr><th>Service key</th><td><code>${esc(b.serviceClientId ?? "—")}</code> · secret ${
-      b.hasSecret ? "stored" : "<b>missing</b>"
-    }</td></tr>
-    <tr><th>Trust anchor</th><td>${
-      b.trustAnchorAt ? `stored ${esc(ago(b.trustAnchorAt))}` : "<b>missing</b>"
-    } — re-export it whenever the workspace's approvers change</td></tr>
+  <div class="row"><h2>INTYGA connection</h2><span class="badge on">configured</span></div>
+  <p class="mut">Managed through deployment environment variables and a mounted trust anchor.
+    Update the deployment and restart to rotate credentials or change the connection.</p>
+  <table>
+    <tr><th>Gateway</th><td><code>${esc(b.baseUrl)}</code></td></tr>
+    <tr><th>Console</th><td><code>${esc(b.consoleUrl)}</code></td></tr>
+    <tr><th>Workspace ID</th><td><code>${esc(b.workspaceId)}</code></td></tr>
+    <tr><th>Sign-in</th><td>${b.embeddedApplicationId ? "Embedded application passkey" : "INTYGA approval"}${b.oidcClientId ? " or OIDC" : ""}</td></tr>
+    <tr><th>Member application</th><td><code>${esc(b.embeddedApplicationId ?? "not configured")}</code></td></tr>
+    <tr><th>OIDC client (optional)</th><td><code>${esc(b.oidcClientId ?? "not configured")}</code></td></tr>
+    <tr><th>Instance origin</th><td><code>${esc(b.origin)}</code></td></tr>
+    <tr><th>Service key</th><td><code>${esc(b.serviceClientId)}</code> · secret supplied by deployment</td></tr>
+    <tr><th>Trust anchor</th><td>Loaded from the configured file; workspace matches</td></tr>
   </table>
-  <div class="row">
-    <button id="test-binding">Test connection</button>
-    <span id="test-result" class="mut" style="font-size:13px"></span>
-    ${actionBtn({
-      label: "Repoint to another workspace…",
-      action: "intelligence.workspace.rebind",
-      params: {
-        baseUrl: b.baseUrl ?? "",
-        consoleUrl: b.consoleUrl ?? "",
-        workspaceId: b.workspaceId ?? "",
-        oidcClientId: b.oidcClientId ?? "",
-        serviceClientId: b.serviceClientId ?? "",
-      },
-      cls: "danger",
-    })}
-  </div>
+  <div class="row"><button id="test-binding">Test connection</button>
+    <span id="test-result" class="mut"></span></div>
   <script>
   document.getElementById("test-binding").addEventListener("click", async () => {
     const out = document.getElementById("test-result");
     out.textContent = "Testing…";
-    const r = await fetch("/settings/test", { method: "POST", headers: { accept: "application/json" } });
-    const b = await r.json().catch(() => ({ ok: false, error: "no answer" }));
-    out.textContent = b.ok ? "Connected: the service key is accepted." : (b.error || "failed");
+    try {
+      const r = await fetch("/settings/test", { method: "POST", headers: { accept: "application/json" } });
+      const b = await r.json();
+      out.textContent = b.ok ? "Connected: the service key is accepted." : (b.error || "failed");
+    } catch { out.textContent = "Connection test failed. Try again."; }
   });
   </script>
-</div>
-<div class="card">
-  <h2>Credentials</h2>
-  <p class="mut" style="font-size:13px;margin-top:0">
-    Rotate the service secret or store a freshly exported trust anchor without changing which
-    workspace this tenant belongs to. Not an approved action: a secret the workspace does not know
-    simply fails at the next exchange. An administrator can paste arbitrary approver keys; a bad
-    anchor makes actions fail. It can never skip approval: INTYGA still checks the approval when
-    Intelligence redeems it, before the action runs. Administrators only.
-  </p>
-  <form method="post" action="/settings/credentials">
-    <div class="grid g2">
-      <div class="field"><label>New service secret (optional)</label>
-        <input name="serviceSecret" type="password" autocomplete="off"></div>
-      <div class="field"><label>Trust anchor JSON (optional)</label>
-        <textarea name="trustAnchor" rows="3" placeholder='{"type":"intyga-trust-anchor", …}'></textarea></div>
-    </div>
-    <button type="submit">Save</button>
-  </form>
 </div>
 <div class="card">
   <h2>Data retention</h2>

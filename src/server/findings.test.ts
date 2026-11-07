@@ -1,3 +1,4 @@
+import { testDeployment } from "../test/deployment.ts"
 import assert from "node:assert/strict"
 import { after, before, beforeEach, test } from "node:test"
 import type { FastifyInstance } from "fastify"
@@ -13,6 +14,7 @@ let prisma: typeof import("../store/client.ts")["prisma"]
 let app: FastifyInstance
 let tenantId: string
 let cookie: string
+const deployment = testDeployment()
 
 before(async () => {
   if (skip) return
@@ -24,6 +26,7 @@ after(async () => {
   if (skip) return
   await app.close()
   await prisma.$disconnect()
+  deployment.dispose()
 })
 beforeEach(async () => {
   if (skip) return
@@ -34,8 +37,6 @@ beforeEach(async () => {
     data: {
       slug: "triage",
       name: "Triage",
-      intygaBaseUrl: "http://127.0.0.1:9",
-      intygaOidcClientId: "oidc_test",
     },
   })
   tenantId = tenant.id

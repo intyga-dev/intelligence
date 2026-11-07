@@ -81,6 +81,8 @@ export async function stubGateway() {
     tokenCalls: [] as URLSearchParams[],
     requests: [] as string[],
     nonce: "approval-test-nonce",
+    embeddedRole: "MEMBER",
+    embeddedCredentialId: "embedded-test-credential",
   }
   app.addHook("onRequest", async (req) => {
     state.requests.push(req.url)
@@ -110,6 +112,19 @@ export async function stubGateway() {
       .code(state.consumeOk ? 200 : 409)
       .send({ ok: state.consumeOk, reason: state.consumeOk ? undefined : "already consumed" })
   })
+  app.post("/embedded/applications/:applicationId/approval-member", async () => ({
+    members: [
+      {
+        sub: "123e4567-e89b-42d3-a456-426614174001",
+        membershipId: "123e4567-e89b-42d3-a456-426614174002",
+        role: state.embeddedRole,
+        email: "member@example.test",
+        name: "Workspace member",
+        did: signerDid,
+        credentialId: state.embeddedCredentialId,
+      },
+    ],
+  }))
   baseUrl = await app.listen({ port: 0, host: "127.0.0.1" })
   function reset() {
     state.claims = {

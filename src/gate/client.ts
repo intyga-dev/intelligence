@@ -8,23 +8,13 @@ import {
   trustAnchorApprovers,
   verifyApprovalReceipt,
 } from "@intyga/sdk"
-import { config } from "../config.ts"
 import { gatewayTransportUrl } from "./transport.ts"
 
-// Intelligence is an ordinary INTYGA relying party (core ADR 030).
-//
-// Privileged actions here — activating a connector, enabling the judgment provider, purging data —
-// are approved through `POST /authorize` with a SERVICE key, under the workspace's own approval
-// rules, by its members, at the INTYGA console or in the Approver app. The receipt is verified
-// OFFLINE against the trust anchor the workspace exported (the approvers' keys, the console's
-// WebAuthn origin), then consumed, and only then does the action run. Intelligence never holds a
-// key that can approve anything: the service key can only ask.
-//
-// Sign-in is the other half, in src/auth/oidc.ts: INTYGA is the identity provider, so every user of
-// Intelligence is a member of the bound workspace, and the workspace's ADMINs are its administrators.
-//
-// Everything here fails closed. No binding, an unreachable gateway or a receipt that does not verify
-// is a refusal, never an approval.
+// Intelligence uses ordinary INTYGA approvals (ADRs 030–031). A SERVICE key asks; an eligible
+// member signs with an application passkey (embedded), or at the console in non-embedded mode.
+// This gate verifies against frozen parameters and the deployment's pinned keys and origin,
+// then requires one-use redemption. A bad anchor can refuse legitimate actions, but cannot
+// bypass the gateway's policy and membership checks. No approval authority is held here.
 
 export class GateError extends Error {}
 export class GateRefused extends GateError {}
@@ -45,17 +35,6 @@ export interface GateConfig {
   trustAnchor: TrustAnchorFile
 }
 
-/** The tenant row's binding, with the secret already decrypted by the caller. */
-export interface TenantGateBinding {
-  intygaBaseUrl: string | null
-  intygaConsoleUrl: string | null
-  intygaWorkspaceId: string | null
-  intygaOidcClientId: string | null
-  intygaServiceClientId: string | null
-  intygaServiceSecret: string | null
-  intygaTrustAnchor: unknown
-}
-
 /** Parse an exported trust anchor, or say what is wrong with it in words a person can act on. */
 export function parseTrustAnchor(
   raw: unknown,
@@ -74,38 +53,6 @@ export function parseTrustAnchor(
   } catch (err) {
     return { ok: false, error: `the trust anchor is not usable: ${(err as Error).message}` }
   }
-}
-
-function bindingFor(tenant: TenantGateBinding | null): GateConfig | null {
-  const baseUrl = tenant?.intygaBaseUrl ?? config.intyga.baseUrl
-  const consoleUrl = tenant?.intygaConsoleUrl ?? config.intygaConsoleUrl
-  const workspaceId = tenant?.intygaWorkspaceId ?? config.intyga.workspaceId
-  const serviceClientId = tenant?.intygaServiceClientId ?? config.intyga.serviceClientId
-  const serviceSecret = tenant?.intygaServiceSecret ?? config.intyga.serviceSecret
-  const anchorRaw = tenant?.intygaTrustAnchor ?? config.intyga.trustAnchor
-  if (!baseUrl || !workspaceId || !serviceClientId || !serviceSecret || anchorRaw == null) return null
-  const parsed = parseTrustAnchor(anchorRaw)
-  if (!parsed.ok || parsed.anchor.tenantId !== workspaceId) return null
-  return { baseUrl, consoleUrl, workspaceId, serviceClientId, serviceSecret, trustAnchor: parsed.anchor }
-}
-
-/**
- * Resolve a tenant's binding. Per tenant, not global: environment variables are a BOOTSTRAP only —
- * they seed the first tenant before there is a row to read. A stored binding always wins.
- */
-export function resolveGateConfig(tenant: TenantGateBinding | null): GateConfig {
-  const cfg = bindingFor(tenant)
-  if (!cfg) {
-    throw new GateNotConfigured(
-      "This tenant is not connected to an INTYGA workspace. Intelligence requires INTYGA for sign-in " +
-        "and approvals — connect the workspace (service key and trust anchor) before using privileged actions.",
-    )
-  }
-  return cfg
-}
-
-export function gateConfigured(tenant: TenantGateBinding | null = null): boolean {
-  return bindingFor(tenant) !== null
 }
 
 function client(cfg: GateConfig): IntygaClient {

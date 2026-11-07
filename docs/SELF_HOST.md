@@ -1,7 +1,7 @@
 # Self-host Intelligence
 
 Intelligence is free to run on your infrastructure. It requires an INTYGA workspace for sign-in and
-approval. Your users are the workspace's members and sign in with their existing INTYGA passkeys.
+approval. Members link an application passkey once, then sign in and approve inside Intelligence.
 Your INTYGA deployment must support **Integrations → App sign-in**, SERVICE API keys and online
 trust-anchor exports from **Approval Rules**. Upgrade INTYGA if these controls are missing.
 
@@ -36,31 +36,40 @@ intelligence.example.com {
 }
 ```
 
-Use a hostname you control with DNS pointing to this server. Register its exact `/auth/callback` URL in INTYGA; update that registration if the
-hostname changes. Passkeys belong to the INTYGA console domain. A containerized proxy needs its own network arrangement; loopback is the host's loopback.
+Use a hostname you control with DNS pointing to this server. Register this exact origin under INTYGA’s Member applications. Application passkeys are scoped to
+this hostname; changing it requires a new registration and passkeys. A containerized proxy needs its own network arrangement; loopback is the host's loopback.
 
 ## Connect INTYGA
 
-1. Open your instance. **Example incident** is static and creates no findings, users or alerts.
-2. Open your INTYGA workspace. In **Integrations → App sign-in**, register this instance with the
-   exact redirect URI `https://intelligence.example.com/auth/callback` (or
-   `http://localhost:4100/auth/callback` locally). Copy its public client ID; it has no secret.
-3. In **API Keys → Create a service and its key**, create a SERVICE identity and save the client ID
-   and secret. Configure its approval rules and approvers under **Approval Rules**, then export the
-   online trust anchor. Copy the workspace ID from **Settings**.
-4. In Intelligence's setup form, enter `SETUP_TOKEN` from `.env.selfhost`, the gateway and console
-   URLs, workspace ID, instance origin, OIDC client ID, SERVICE client ID and secret, and trust-anchor
-   JSON. The anchor must name this workspace. The service secret is stored encrypted in the database.
-5. Sign in with INTYGA. Workspace ADMINs administer Intelligence; MEMBERs can read it. There is no
-   separate Intelligence passkey to enrol. Use **Settings → Test connection**, then create a Service
-   and follow its approval link to INTYGA. Approval is verified and redeemed before the change runs.
-6. Clear `SETUP_TOKEN` in `.env.selfhost` and recreate the app after setup. Preserve the other secrets.
+Connection configuration lives in the deployment environment and a mounted public trust-anchor
+file. The browser shows status; it cannot replace the service key, workspace or anchor.
 
-For a private INTYGA deployment, set `INTYGA_CONSOLE_URL` before starting the stack.
-For the development Compose stack with INTYGA running on the Docker host, see the
-[local gateway routing note](../README.md#4-connect-the-workspace).
-There is no password login or auth bypass. An INTYGA outage prevents new sign-ins and approvals;
-already-enabled collection and detection continue locally.
+1. In INTYGA, create a SERVICE and its key, then configure the workspace approval rules for it.
+2. Set `PUBLIC_URL`, `INTYGA_URL`, `INTYGA_CONSOLE_URL`, `INTYGA_WORKSPACE_ID`,
+   `INTYGA_SERVICE_CLIENT_ID` and `INTYGA_SERVICE_CLIENT_SECRET` in `.env.selfhost`.
+3. In **Integrations → Member applications**, register Intelligence’s exact origin and service
+   client ID. Save the ownership proof to `config/intyga-embedded-registration.json`. Set
+   `INTYGA_EMBEDDED_REGISTRATION_FILE` to that file and `INTYGA_EMBEDDED_APPLICATION_ID` to the
+   returned UUID. Restart the app, then **Verify ownership** in INTYGA within 15 minutes.
+4. From Intelligence’s sign-in page, choose **Link my INTYGA membership**. Authorize linking with
+   your console passkey, return to Intelligence, and create an application passkey. Each member
+   links their own membership; the service key cannot enroll people on its own.
+5. Export the **application** trust anchor from Member applications, save it as
+   `config/intyga-trust-anchor.json`, and restart the app. Its `tenantId` must match the workspace.
+   Refresh this file when application passkeys change.
+6. Sign in with the application passkey and approve a protected change in Intelligence. Workspace
+   ADMINs administer; MEMBERs read. Each action requires its own verified, redeemed approval.
+
+The initial status page can run before a usable trust anchor has been mounted; the well-known
+ownership proof remains available. Members can link before an anchor is mounted; sign-in and execution require a valid anchor.
+`INTYGA_OIDC_CLIENT_ID` is optional: an OIDC client uses the exact `/auth/callback` URI. Without
+embedded configuration, the normal approval sign-in flow opens INTYGA and grants its initiating
+browser administrator access for 12 hours. Keep the corresponding console-origin trust anchor
+for that mode. There is no password login or authentication bypass.
+
+An INTYGA outage prevents new sign-ins and approvals; enabled collection and detection continue.
+For local development use host `pnpm dev`, `PUBLIC_URL=http://localhost:4100` and loopback gateway
+URLs. The INTYGA console operator must enable `EMBEDDED_ALLOW_LOCALHOST=true` in development.
 
 ## Get useful evidence
 
@@ -85,9 +94,10 @@ docker compose --env-file .env.selfhost -f compose.selfhost.yml logs --tail=100 
 `/ready` checks the app's database connection. The scheduler has its own health check based on the
 last successful detection tick. A fresh install has no sources until you activate them.
 
-Back up the Postgres database and `.env.selfhost` securely. The installer no longer creates
-`.selfhost/` or a signing key; approval keys remain with the INTYGA approvers. The encryption key is required
-to restore connector and INTYGA credentials. Do not regenerate secrets during an upgrade.
+Back up Postgres, `.env.selfhost`, and `config/intyga-trust-anchor.json` securely. The installer
+does not create `.selfhost/` or an approval signing key. Passkey private keys remain in members’
+authenticators. The encryption key restores connector secrets and encrypted browser state; the
+INTYGA service secret is supplied only through the environment. Do not regenerate secrets during an upgrade.
 
 ```sh
 docker compose --env-file .env.selfhost -f compose.selfhost.yml exec -T postgres \

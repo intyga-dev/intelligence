@@ -1,15 +1,7 @@
-import { config } from "../config.ts"
-import {
-  approvalState,
-  type GateConfig,
-  GateError,
-  openApproval,
-  resolveGateConfig,
-  type TenantGateBinding,
-  verifyAndConsume,
-} from "../gate/client.ts"
+import { embeddedApprovalLink } from "../embedded/approval-link.ts"
+import { approvalState, type GateConfig, GateError, openApproval, verifyAndConsume } from "../gate/client.ts"
 import { prisma } from "../store/client.ts"
-import { decryptSecret } from "../store/crypto.ts"
+import { resolveGateConfig } from "../gate/deployment.ts"
 import { type ActionOutcome, actionDef } from "./registry.ts"
 
 // The two halves of a privileged action, and the state that survives between them.
@@ -24,40 +16,9 @@ import { type ActionOutcome, actionDef } from "./registry.ts"
 const APPROVAL_TTL_SECONDS = 15 * 60
 export class ActionError extends Error {}
 
-/** Load a tenant's binding, decrypting the service secret for use. */
-export async function tenantBinding(tenantId: string): Promise<TenantGateBinding | null> {
-  const t = await prisma.tenant.findUnique({
-    where: { id: tenantId },
-    select: {
-      intygaBaseUrl: true,
-      intygaConsoleUrl: true,
-      intygaWorkspaceId: true,
-      intygaOidcClientId: true,
-      intygaServiceClientId: true,
-      intygaServiceSecretCipher: true,
-      intygaTrustAnchor: true,
-    },
-  })
-  if (!t) return null
-  return {
-    intygaBaseUrl: t.intygaBaseUrl,
-    intygaConsoleUrl: t.intygaConsoleUrl,
-    intygaWorkspaceId: t.intygaWorkspaceId,
-    intygaOidcClientId: t.intygaOidcClientId,
-    intygaServiceClientId: t.intygaServiceClientId,
-    intygaServiceSecret: t.intygaServiceSecretCipher ? decryptSecret(t.intygaServiceSecretCipher) : null,
-    intygaTrustAnchor: t.intygaTrustAnchor,
-  }
-}
-
-/**
- * The execution target bound into every signed payload: this instance, by the origin it is served
- * from. An approval for one deployment cannot be replayed against another (DIV Target Isolation).
- */
-export async function executionTarget(tenantId: string): Promise<string> {
-  const t = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { publicOrigin: true } })
-  const origin = t?.publicOrigin ?? config.publicUrl
-  return origin ? `intelligence:${new URL(origin).host}` : "intelligence:local"
+/** The deployment origin is part of the receipt's signed execution target. */
+export function executionTarget(): string {
+  return `intelligence:${new URL(resolveGateConfig().origin).host}`
 }
 
 export interface OpenedAction {
@@ -66,6 +27,8 @@ export interface OpenedAction {
   impact: "low" | "medium" | "high"
   /** Where the approver signs: the console's /approve page for this nonce. */
   approveUrl: string
+  embeddedApprovalUrl?: string
+  embedded?: boolean
   expiresAt: string
 }
 
@@ -91,11 +54,11 @@ export async function openAction(input: {
     select: { id: true },
   })
   if (!member) throw new ActionError("not an active member of this tenant")
-  const cfg = resolveGateConfig(await tenantBinding(input.tenantId))
+  const cfg = resolveGateConfig()
   // `parsed.data` is unknown to the compiler because the registry lookup erases the generic; the
   // schema has just validated it is an object, so the assertion is narrow and load-bearing.
   const params = parsed.data as Record<string, unknown>
-  const target = await executionTarget(input.tenantId)
+  const target = executionTarget()
   const summary = def.summary(parsed.data)
   const opened = await openApproval(cfg, {
     description: summary,
@@ -108,6 +71,7 @@ export async function openAction(input: {
   await prisma.pendingAction.create({
     data: {
       tenantId: input.tenantId,
+      bindingId: cfg.bindingId,
       nonce: opened.nonce,
       action: input.action,
       // Frozen. Step two reads these, never a later request.
@@ -124,6 +88,10 @@ export async function openAction(input: {
     impact: def.impact,
     approveUrl: opened.approveUrl,
     expiresAt: expiresAt.toISOString(),
+    embedded: Boolean(cfg.embeddedApplicationId),
+    ...(cfg.embeddedApplicationId
+      ? { embeddedApprovalUrl: embeddedApprovalLink(cfg, opened.nonce, expiresAt.getTime()) }
+      : {}),
   }
 }
 
@@ -141,6 +109,8 @@ export async function pollAction(input: { tenantId: string; nonce: string }): Pr
     where: { nonce: input.nonce, tenantId: input.tenantId },
   })
   if (!pending) throw new ActionError("no such approval")
+  if (pending.bindingId !== resolveGateConfig().bindingId)
+    throw new ActionError("the deployment configuration changed; open a new approval")
   if (pending.status === "APPLIED") return { status: "applied" }
   if (pending.status === "REFUSED" || pending.status === "EXPIRED")
     return { status: "refused", reason: pending.error ?? "the approval was not granted" }
@@ -154,7 +124,7 @@ export async function pollAction(input: { tenantId: string; nonce: string }): Pr
 
   let cfg: GateConfig
   try {
-    cfg = resolveGateConfig(await tenantBinding(input.tenantId))
+    cfg = resolveGateConfig()
   } catch (err) {
     throw err instanceof GateError ? new ActionError(err.message) : err
   }

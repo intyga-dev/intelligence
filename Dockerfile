@@ -36,10 +36,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/src ./src
 COPY --from=deps /app/prisma ./prisma
 COPY --from=deps /app/prisma.config.ts ./prisma.config.ts
-# The operator CLIs (provision-tenant, bind-workspace) must exist where production
-# runs: they are the documented way in when browser setup is disabled (SETUP_TOKEN unset) and the
-# recovery path for a broken workspace binding. Passkey recovery belongs to INTYGA. Run them with
-# `docker exec <container> node_modules/.bin/tsx scripts/<name>.ts …`.
+# Operator utilities for local data and connectors. INTYGA configuration comes from the deployment.
 COPY --from=deps /app/scripts ./scripts
 COPY --from=deps /app/package.json ./package.json
 

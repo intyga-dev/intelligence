@@ -14,8 +14,6 @@ try {
   void config.databaseUrl
   void config.tickToken
   void config.secretsEncKey
-  // Unset is legitimate (browser setup off); a placeholder or short value in production throws.
-  void config.setupToken
 } catch (err) {
   console.error(`refusing to start: ${(err as Error).message}`)
   process.exit(1)

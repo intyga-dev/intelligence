@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 export function publicOrigin(value: string): string {
@@ -29,9 +29,8 @@ export function initialiseSelfHost(directory: string, origin: string, port = 410
     throw new Error(
       "Self-host configuration already exists; keep it for upgrades. Refusing to rotate secrets.",
     )
-  // No key material: Intelligence holds no signing key of its own. The INTYGA credentials (an OIDC
-  // client id, a service key and the exported trust anchor) are entered in the setup form after the
-  // stack is up, and stored encrypted under SECRETS_ENC_KEY.
+  // The operator supplies the service credential and public trust file; nothing is stored in the DB.
+  mkdirSync(path.join(directory, "config"), { recursive: true })
   writeFileSync(
     envPath,
     [
@@ -40,9 +39,17 @@ export function initialiseSelfHost(directory: string, origin: string, port = 410
       `SELFHOST_HTTP_PORT=${port}`,
       `POSTGRES_PASSWORD=${randomBytes(32).toString("hex")}`,
       `SECRETS_ENC_KEY=${randomBytes(32).toString("base64")}`,
-      `SETUP_TOKEN=${randomBytes(32).toString("hex")}`,
       `TICK_TOKEN=${randomBytes(32).toString("hex")}`,
+      "INTYGA_URL=https://api.intyga.com",
       "INTYGA_CONSOLE_URL=https://app.intyga.com",
+      "INTYGA_WORKSPACE_ID=",
+      "INTYGA_SERVICE_CLIENT_ID=",
+      "INTYGA_SERVICE_CLIENT_SECRET=",
+      "INTYGA_TRUST_ANCHOR_FILE=./config/intyga-trust-anchor.json",
+      "# Optional: enables workspace identity/role sign-in alongside normal approval sign-in.",
+      "INTYGA_OIDC_CLIENT_ID=",
+      "INTYGA_EMBEDDED_APPLICATION_ID=",
+      "INTYGA_EMBEDDED_REGISTRATION_FILE=./config/intyga-embedded-registration.json",
       "",
     ].join("\n"),
     { flag: "wx", mode: 0o600 },

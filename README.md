@@ -14,16 +14,16 @@ evidence-backed findings** that genuinely need human attention.
 
 ## Read this first
 
-**Free to self-host. INTYGA sign-in is required.** Connect an INTYGA workspace with an App
-sign-in client, a SERVICE API key and an exported trust anchor. Start with the
-[self-hosting walkthrough](docs/SELF_HOST.md) for Docker, local secret generation and guided setup.
+**Free to self-host. INTYGA approvals are required.** Configure an INTYGA workspace, a SERVICE API
+key and an exported trust-anchor file in the deployment environment. Start with the
+[self-hosting walkthrough](docs/SELF_HOST.md).
 
-Your team signs in through INTYGA using OpenID Connect with PKCE and the passkeys they already use
-at the INTYGA console. Workspace ADMINs administer Intelligence; MEMBERs can read it. Privileged
-changes — turning on a connector, enabling the judgment provider, purging data — require approval
-under the workspace's rules. Intelligence checks the signed receipt against its trust anchor and
-redeems it with INTYGA before executing. There is no local password account or switch that disables
-the gate. Before connecting, explore the static example incident at `/demo`.
+Intelligence is a member-bound embedded approval example. Link your real INTYGA workspace membership
+once, then create an application passkey. Sign-in and protected changes use that passkey inside
+Intelligence. ADMINs administer; MEMBERs read. Quorum, eligibility and one-use redemption remain
+INTYGA’s responsibility. Intelligence verifies every receipt against a mounted application trust
+anchor before redemption and execution. OIDC is optional; there is no local password or gate bypass.
+Before configuration, explore the static example incident at `/demo`.
 
 Group deployment, error and incident sources into **Services** to investigate their findings and
 recent observations together. Deploy regressions use only signals from the same service.
@@ -105,8 +105,8 @@ flowchart LR
 * **Privileged actions fail closed.** If INTYGA is unreachable, no privileged administrative action
   in Intelligence can execute. Missing workspace credentials or trust configuration means *refused*, never *allowed*.
 * Intelligence holds an ordinary **SERVICE API key** (client ID and secret). It can request approvals
-  under the workspace's rules, but it cannot sign them. Sign-in uses a separate public OIDC client
-  with no client secret. The exported trust anchor contains public approver keys and WebAuthn pinning.
+  under the workspace's rules, but it cannot sign them. OIDC sign-in optionally uses a separate public
+  client with no secret. The exported trust anchor contains public keys and WebAuthn pinning.
 * [`scripts/check-no-intyga-client.mjs`](scripts/check-no-intyga-client.mjs) enforces the shape of
   that boundary in CI: no INTYGA operator credentials in this process's environment, no direct
   database access to INTYGA, no admin, policy, sweep or internal endpoints. It is a text scan and
@@ -115,16 +115,32 @@ flowchart LR
 
 ### First-time setup and sign-in
 
-Binding a workspace from the browser requires the server's `SETUP_TOKEN`. Before connection,
-private pages and writes are closed; the setup form, static demo and operational endpoints remain
-available. With `SETUP_TOKEN` unset in production, browser setup is disabled and
-`scripts/bind-workspace.ts` is the operator's alternative.
+The deployment environment is the only source of connection settings. Set the gateway and console
+URLs, workspace ID, service client ID and secret, and `PUBLIC_URL`; mount the exported online trust
+anchor and set `INTYGA_TRUST_ANCHOR_FILE`. Its `tenantId` must match `INTYGA_WORKSPACE_ID`. The UI
+shows connection status and cannot replace credentials, trust keys or the workspace. None of those
+settings are stored in the database.
 
-Register an OIDC client with the exact callback URI `<origin>/auth/callback`, create a SERVICE key,
-and export an online trust anchor for the same workspace. After connection, sign in through INTYGA.
-The callback creates or refreshes the local member record from verified token claims; there are no
-Intelligence invites or passkey enrolments. Manage membership and passkeys in INTYGA. Roles are
-refreshed at sign-in; existing Intelligence sessions last up to 12 hours unless revoked locally.
+Register the origin and SERVICE key in **INTYGA → Integrations → Member applications**, serve the
+short-lived ownership proof, and verify it. Set `INTYGA_EMBEDDED_APPLICATION_ID`. Members authorize
+linking with their console passkey, then create a separate passkey on Intelligence’s origin.
+The service cannot choose an email and enroll as that person. Export the application’s trust anchor
+after enrollment and mount it before sign-in. See [the full sequence](docs/SELF_HOST.md#connect-intyga).
+
+Sign-in binds a random browser identifier, instance origin and duration into an approval. The
+initiating browser receives the signing member’s current workspace role. Application credentials
+cannot sign in to the INTYGA console. Revoking an application, its passkey, or membership invalidates
+embedded approvals, including approvals awaiting redemption. Shared approval links let other
+eligible members contribute to quorum using their own application passkeys.
+
+Without embedded configuration, normal approval sign-in opens INTYGA and explicitly grants its
+initiating browser ADMIN access for 12 hours. Optional OIDC uses a registered `/auth/callback` URI
+and `INTYGA_OIDC_CLIENT_ID`; its verified identity claims determine the role. Use the console-origin
+anchor for that mode. Existing sessions expire within 12 hours unless revoked locally; upstream role
+changes refresh at sign-in. Changing deployment identity invalidates old sessions and pending actions.
+
+An administrator can paste arbitrary public keys into a trust anchor. A bad anchor can make actions
+fail, but it cannot bypass approval: INTYGA independently checks eligibility and one-use redemption.
 
 ---
 
@@ -218,7 +234,7 @@ and [`.env.production.example`](.env.production.example).*
 
 * **Node.js** `v24+` and **pnpm** `v10+`
 * **Docker & Docker Compose** (for PostgreSQL)
-* **An INTYGA workspace** with an App sign-in client, SERVICE key and trust anchor — see
+* **An INTYGA workspace** with a SERVICE key and trust anchor (OIDC is optional) — see
   [Read this first](#read-this-first). INTYGA Cloud (`app.intyga.com`) is not generally available
   yet; during preview, bind against a staging or self-hosted gateway.
 
@@ -245,37 +261,36 @@ pnpm db:generate
 pnpm db:deploy
 ```
 
-### 3. Register sign-in and approval credentials in INTYGA
+### 3. Create approval credentials in INTYGA
 
-In **Integrations → App sign-in**, register `http://localhost:4100/auth/callback` and copy the
-OIDC client ID. In **API Keys → Create a service and its key**, create the SERVICE identity and
-save its client ID and secret. In **Approval Rules**, configure who may approve that service's
-requests and export its online trust anchor. Copy the workspace ID from **Settings**.
+In **API Keys → Create a service and its key**, save the SERVICE client ID and secret. Configure
+its approvers under **Approval Rules**. Register Intelligence’s origin and service client ID under
+**Integrations → Member applications**. Save the application UUID and download its ownership proof.
+The workspace ID is shown at the top of API Keys. For local origin verification, the INTYGA console
+must run with `EMBEDDED_ALLOW_LOCALHOST=true` in development.
 
-### 4. Connect the workspace
+### 4. Configure the connection
 
-Either complete the browser setup after step 5, using `SETUP_TOKEN` from `.env`, or use the CLI:
+Set these in your private `.env` (use the gateway and console you operate):
 
-```bash
-pnpm exec tsx scripts/provision-tenant.ts default
-pnpm exec tsx scripts/bind-workspace.ts \
-  --base-url https://api.staging.intyga.com \
-  --console-url https://app.staging.intyga.com \
-  --workspace-id <WORKSPACE_ID> \
-  --oidc-client-id <OIDC_CLIENT_ID> \
-  --service-client-id <SERVICE_CLIENT_ID> \
-  --service-secret-file ./service.secret \
-  --trust-anchor ./trust-anchor.json \
-  --origin http://localhost:4100
+```dotenv
+PUBLIC_URL=http://localhost:4100
+INTYGA_URL=http://localhost:8787
+INTYGA_CONSOLE_URL=http://localhost:3999
+INTYGA_WORKSPACE_ID=<workspace-id>
+INTYGA_SERVICE_CLIENT_ID=<service-client-id>
+INTYGA_SERVICE_CLIENT_SECRET=<service-secret>
+INTYGA_TRUST_ANCHOR_FILE=./config/intyga-trust-anchor.json
+INTYGA_EMBEDDED_APPLICATION_ID=<application-id>
+INTYGA_EMBEDDED_REGISTRATION_FILE=./config/intyga-embedded-registration.json
+# Optional:
+INTYGA_OIDC_CLIENT_ID=
 ```
 
-Store the service secret in `service.secret` with owner-only permissions. For a local INTYGA
-installation use its gateway and console URLs (normally `http://localhost:8787` and
-`http://localhost:3999`). The trust anchor must name the connected workspace.
-
-When Intelligence runs in Docker and INTYGA runs on the host, set `INTYGA_URL=http://localhost:8787`
-and `INTYGA_INTERNAL_URL=http://host.docker.internal:8787` in `.env`, then recreate the app.
-The internal route carries server requests only; the public issuer remains `http://localhost:8787`.
+Create `config/` and save the ownership proof there. After members link their passkeys, export and
+save the application trust anchor there too. Keep `.env` owner-readable only; both
+local configuration paths are ignored by Git. The anchor must name the configured workspace.
+No browser form or database command is needed to configure the connection.
 
 ### 5. Start the application
 
@@ -283,14 +298,20 @@ The internal route carries server requests only; the public issuer remains `http
 pnpm dev
 ```
 
-Open **`http://localhost:4100`**. If you skipped the CLI binding, complete the setup form here.
+Open **`http://localhost:4100`**. Source edits hot reload. For a local INTYGA gateway, run the app
+on the host so `localhost:8787` is reachable. Docker's `host.docker.internal` is not loopback;
+the SDK refuses plain HTTP to it. Container deployments should use an HTTPS gateway.
 
 ### 6. Sign in and approve a change
 
-Sign in with an INTYGA workspace administrator's existing passkey. In **Settings**, click
-**Test connection**, then create a Service or activate a connector. Follow the approval link to
-INTYGA and approve the action; Intelligence polls, verifies and redeems it before making the change.
-Manage additional administrators in INTYGA. Remove `SETUP_TOKEN` after successful browser setup.
+Choose **Verify ownership** in INTYGA before the proof expires. In Intelligence, choose **Link my
+INTYGA membership**, authorize with the console passkey, and create an application passkey on return.
+Export the application trust anchor from Member applications and mount it in `config/`.
+
+Sign in with the application passkey. In **Settings**, click **Test connection**, then create a
+Service or activate a connector and approve directly in Intelligence. If the rule needs more than
+one approver, share the application approval link with other enrolled workspace members.
+Intelligence verifies and redeems the completed approval before making the change.
 
 ---
 
@@ -415,20 +436,21 @@ and turning it on requires an administrator passkey signature.
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `PORT` | HTTP port the console and ingest API bind to. | `4100` |
-| `PUBLIC_URL` | External HTTPS origin used for setup defaults and webhook links behind a reverse proxy. | Request origin |
-| `INTYGA_CONSOLE_URL` | INTYGA console for signup and free Intelligence registration. | `https://app.intyga.com` |
+| `PUBLIC_URL` | Canonical instance origin for browser sign-in, approval targets and webhook links. | Required |
+| `INTYGA_CONSOLE_URL` | Console where workspace members approve requests. | Required |
 | `DATABASE_URL` | PostgreSQL connection string. | Required |
 | `DIRECT_URL` | Direct connection string for Prisma migrations (bypasses any pooler). | Required |
 | `TICK_TOKEN` | Bearer token protecting `POST /internal/tick`. | Required in production |
-| `SETUP_TOKEN` | Required to complete first-time setup in the browser. Unset in production ⇒ browser setup disabled; use `scripts/bind-workspace.ts`. | Dev placeholder |
 | `SECRETS_ENC_KEY` | 32-byte base64 key encrypting connection credentials at rest. | Required in production |
 | `INTYGA_URL` | INTYGA gateway URL for sign-in and approval requests. | None |
-| `INTYGA_INTERNAL_URL` | Optional server-only route to `INTYGA_URL`; browser redirects and issuer verification still use the public URL. | None |
+| `INTYGA_INTERNAL_URL` | Optional HTTPS server route to `INTYGA_URL`; browser redirects and issuer verification still use the public URL. | None |
 | `INTYGA_WORKSPACE_ID` | Workspace ID required in tokens, receipts and the trust anchor. | None |
-| `INTYGA_OIDC_CLIENT_ID` | Public App sign-in client ID; callback is `<origin>/auth/callback`. | None |
+| `INTYGA_OIDC_CLIENT_ID` | Optional public App sign-in client ID; callback is `<origin>/auth/callback`. | None |
 | `INTYGA_SERVICE_CLIENT_ID` | SERVICE API key client ID, used to request approvals. | None |
 | `INTYGA_SERVICE_CLIENT_SECRET` | SERVICE API key secret. | None |
-| `INTYGA_TRUST_ANCHOR` | Online trust-anchor JSON exported from Approval Rules. | None |
+| `INTYGA_TRUST_ANCHOR_FILE` | Online application anchor exported from Member applications (console anchor from Approval Rules for non-embedded mode). Mount read-only. | Required for sign-in/actions |
+| `INTYGA_EMBEDDED_APPLICATION_ID` | Registered member application UUID. Enables in-page passkey ceremonies. | None |
+| `INTYGA_EMBEDDED_REGISTRATION_FILE` | Short-lived ownership proof JSON served at the well-known URL. | None |
 | `INGEST_RATE_GLOBAL_PER_MIN` | Aggregate ingest allowance across all connectors. | `1200` |
 | `INGEST_RATE_PER_CONNECTION_PER_MIN` | Per-connection ingest allowance. | `300` |
 | `TYPESAFE_API_KEY` | *(Optional)* Judgment provider key. Unset ⇒ null provider. | None |
@@ -442,8 +464,8 @@ The `JEV_API_KEY`, `JEV_MODEL` and `JEV_ENDPOINT` names are the earlier spelling
 for compatibility. Set one family, not both — the `TYPESAFE_*` name wins silently.
 
 In production (`NODE_ENV` anything but `development` or `test`) a missing or still-placeholder
-`TICK_TOKEN` or `SECRETS_ENC_KEY` **throws at startup** rather than running on a dev default. A
-placeholder `SETUP_TOKEN` is refused when setup is attempted.
+`TICK_TOKEN` or `SECRETS_ENC_KEY` **throws at startup** rather than running on a dev default. Missing
+INTYGA configuration exposes only a status page and refuses sign-in and privileged actions.
 
 ---
 

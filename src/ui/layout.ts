@@ -1,3 +1,4 @@
+import { EMBEDDED_BROWSER_JS } from "../embedded/browser.ts"
 import { CHART_CSS, CHART_JS } from "./charts.ts"
 import { THEME_CSS } from "./theme.ts"
 
@@ -204,7 +205,7 @@ export function page(o: PageOpts): string {
 
 <dialog id="approve">
   <form method="dialog">
-    <div class="head"><h3>Approve in INTYGA</h3></div>
+    <div class="head"><h3>Approve action</h3></div>
     <div class="body">
       <p class="mut" style="margin:0 0 12px">
         This action changes how Intelligence behaves, so it is approved the same way any protected
@@ -212,10 +213,12 @@ export function page(o: PageOpts): string {
       </p>
       <div id="approve-summary" class="impact-low"></div>
       <p id="approve-status" class="mut" style="margin:12px 0 0"></p>
+      <p id="approve-share" hidden>Share with another approver: <input id="approve-share-url" readonly aria-label="Approval link"></p>
       <p id="approve-error" class="mut" style="color:var(--red);margin:12px 0 0"></p>
     </div>
     <div class="foot">
       <button value="cancel" class="ghost">Cancel</button>
+      <button type="button" id="approve-embedded" class="primary" hidden>Approve with passkey</button>
       <a id="approve-go" class="primary" href="#" target="_blank" rel="noopener" hidden>Open approval ↗</a>
     </div>
   </form>
@@ -223,6 +226,7 @@ export function page(o: PageOpts): string {
 
 <script>
 ${CHART_JS}
+${EMBEDDED_BROWSER_JS}
 
 // ─── the gated-action ceremony ────────────────────────────────────────────
 // Open an approval, hand the admin the console link, and poll until a member of the workspace has
@@ -233,6 +237,7 @@ const sumEl = document.getElementById("approve-summary");
 const statusEl = document.getElementById("approve-status");
 const errEl = document.getElementById("approve-error");
 const goEl = document.getElementById("approve-go");
+const embeddedEl = document.getElementById("approve-embedded");
 let pollTimer = null;
 dlg.addEventListener("close", () => { if (pollTimer) clearTimeout(pollTimer); pollTimer = null; });
 document.addEventListener("click", async (e) => {
@@ -246,6 +251,7 @@ document.addEventListener("click", async (e) => {
   sumEl.textContent = "Preparing…";
   sumEl.className = "impact-low";
   goEl.hidden = true;
+  embeddedEl.hidden = true;
   dlg.showModal();
   let opened;
   try {
@@ -262,9 +268,19 @@ document.addEventListener("click", async (e) => {
   }
   sumEl.textContent = opened.summary;
   sumEl.className = "impact-" + opened.impact;
+  const share=document.getElementById("approve-share");
+  share.hidden=!opened.embeddedApprovalUrl;
+  document.getElementById("approve-share-url").value=opened.embeddedApprovalUrl||"";
   goEl.href = opened.approveUrl;
-  goEl.hidden = false;
-  statusEl.textContent = "Waiting for an approver in your workspace. Open the approval to sign it yourself, " +
+  goEl.hidden = Boolean(opened.embedded);
+  embeddedEl.hidden = !opened.embedded;
+  embeddedEl.disabled = false;
+  embeddedEl.onclick = async () => {
+    embeddedEl.disabled = true;
+    try { const base='/api/actions/'+encodeURIComponent(opened.nonce)+'/embedded/';await signEmbedded(base+'options',base+'verify',{});statusEl.textContent='Passkey accepted. Waiting for the workspace approval quorum…'; }
+    catch(err){errEl.textContent=err.message||'Approval cancelled.';embeddedEl.disabled=false;}
+  };
+  statusEl.textContent = opened.embedded ? "Approve here with your application passkey. Workspace quorum rules apply." : "Waiting for an approver in your workspace. Open the approval to sign it yourself, " +
     "or wait for a colleague — approvers are notified by INTYGA.";
   const poll = async () => {
     let body;

@@ -19,6 +19,7 @@ Start the stack:
   docker compose --env-file .env.selfhost -f compose.selfhost.yml up -d --build
 
 Open ${origin}. For HTTPS, first configure your reverse proxy to forward to 127.0.0.1:${port}.
-The setup form needs SETUP_TOKEN from .env.selfhost, plus three things from your INTYGA console:
-an App sign-in client id, a service key and the exported trust anchor.
+Fill in the workspace and service key in .env.selfhost, and save the exported trust anchor to
+config/intyga-trust-anchor.json. Register Member applications in INTYGA and link an application
+passkey for embedded sign-in and approval. Follow docs/SELF_HOST.md; OIDC is optional.
 See docs/SELF_HOST.md for the full walkthrough, upgrades and backups.`)

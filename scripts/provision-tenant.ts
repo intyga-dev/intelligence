@@ -5,7 +5,7 @@
 // Intelligence (it signs members in and approves privileged actions), so every tenant has an INTYGA
 // relationship by definition; the connector just decides whether we also *observe* it. Activation
 // is an approved action through the HTTP API. Members are not created here: whoever signs in with
-// INTYGA after the workspace is bound (bind-workspace.ts) appears with their workspace role.
+// INTYGA after the deployment is configured appears with their workspace role.
 //
 // This script talks to the database directly, which is deliberately a different trust context from
 // the HTTP surface: whoever holds the database credential can already do anything. The gate exists
@@ -62,7 +62,7 @@ if (flags.has("--activate") && !connection.active) {
 const base = process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 4100}`
 console.log(`
 Tenant      ${tenant.id}  (${slug})
-Sign-in     bind the workspace (scripts/bind-workspace.ts or Settings), then members sign in at
+Sign-in     configure the INTYGA environment variables and trust anchor file, then sign in at
             ${base}/login with their INTYGA passkey. Workspace ADMINs administer Intelligence.
 Connector   INTYGA (built in) — ${connection.active ? "ACTIVE" : "INACTIVE"}
 To observe your INTYGA, register this webhook endpoint in the INTYGA console:

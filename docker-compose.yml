@@ -23,6 +23,8 @@ services:
   app:
     build: .
     container_name: intelligence-app
+    command: ["pnpm", "dev"]
+    init: true
     restart: unless-stopped
     depends_on:
       postgres:
@@ -42,16 +44,23 @@ services:
       PORT: "4100"
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4100}
       INTYGA_CONSOLE_URL: ${INTYGA_CONSOLE_URL:-https://app.intyga.com}
-      # For a gateway running on the Docker host, set INTYGA_URL=http://localhost:8787 and
-      # INTYGA_INTERNAL_URL=http://host.docker.internal:8787 in .env. OIDC still pins INTYGA_URL.
+      # Use an HTTPS gateway from Docker. For a local HTTP gateway, run pnpm dev on the host.
       INTYGA_URL: ${INTYGA_URL:-}
       INTYGA_INTERNAL_URL: ${INTYGA_INTERNAL_URL:-}
+      INTYGA_WORKSPACE_ID: ${INTYGA_WORKSPACE_ID:-}
+      INTYGA_OIDC_CLIENT_ID: ${INTYGA_OIDC_CLIENT_ID:-}
+      INTYGA_SERVICE_CLIENT_ID: ${INTYGA_SERVICE_CLIENT_ID:-}
+      INTYGA_SERVICE_CLIENT_SECRET: ${INTYGA_SERVICE_CLIENT_SECRET:-}
+      INTYGA_TRUST_ANCHOR_FILE: /app/config/intyga-trust-anchor.json
       TICK_TOKEN: dev-tick-token-change-me
-      SETUP_TOKEN: dev-setup-token-change-me
       SECRETS_ENC_KEY: dev-secrets-enc-key-change-me-32b
       # Unset on purpose: with no key the null judgment provider runs and nothing leaves the host.
       # TYPESAFE_API_KEY: ""
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    # Bind the local checkout (including its installed dependencies) for tsx hot reload.
+    volumes:
+      - .:/app
+      - ./config:/app/config:ro
     ports:
       - "4100:4100"
     healthcheck:

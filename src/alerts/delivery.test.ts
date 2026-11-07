@@ -76,7 +76,7 @@ const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000)
 
 async function seed(opts: { active: boolean; minSeverity?: "high" | "low" }) {
   const tenant = await prisma.tenant.create({
-    data: { slug: "t", name: "t", publicOrigin: "https://intel.example" },
+    data: { slug: "t", name: "t" },
   })
   const rule = await prisma.alertRule.create({
     data: {

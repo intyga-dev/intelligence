@@ -16,3 +16,5 @@ docker-compose.yml
 *.pkcs8
 *.pem
 *.key
+
+config

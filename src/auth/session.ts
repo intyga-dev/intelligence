@@ -1,6 +1,7 @@
 import crypto from "node:crypto"
 import { config } from "../config.ts"
 import { prisma } from "../store/client.ts"
+import { deploymentStatus, resolveGateConfig } from "../gate/deployment.ts"
 
 // Sessions.
 //
@@ -41,6 +42,7 @@ export async function createSession(input: {
   await prisma.session.create({
     data: {
       tenantId: input.tenantId,
+      bindingId: resolveGateConfig().bindingId,
       memberId: input.memberId,
       tokenHash: hash(token),
       expiresAt: new Date(Date.now() + TTL_MS),
@@ -53,11 +55,14 @@ export async function createSession(input: {
 /** Resolve a cookie to an actor, or null. Expired and revoked sessions resolve to null. */
 export async function resolveSession(token: string | undefined): Promise<SessionActor | null> {
   if (!token) return null
+  const deployment = deploymentStatus()
+  if (!deployment.configured) return null
   const row = await prisma.session.findUnique({
     where: { tokenHash: hash(token) },
     include: { member: { select: { id: true, externalId: true, label: true, active: true, role: true } } },
   })
-  if (!row || row.revokedAt || row.expiresAt < new Date()) return null
+  if (!row || row.revokedAt || row.expiresAt < new Date() || row.bindingId !== deployment.config.bindingId)
+    return null
   // A deactivated member's sessions stop working immediately, without needing to find and revoke
   // each one — removing someone must not depend on remembering to sweep their browsers.
   if (!row.member.active) return null

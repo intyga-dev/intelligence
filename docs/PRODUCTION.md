@@ -25,14 +25,14 @@ depend on it.
 
 | Decision | Why it is sticky |
 | :--- | :--- |
-| **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It sets the OIDC callback URI and approval execution target. Moving hosts requires updating the registered callback and instance origin; passkeys stay at INTYGA. |
-| **`SECRETS_ENC_KEY`** | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and the INTYGA key. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
+| **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It fixes the embedded application origin/RP ID and approval target. Moving hosts requires a new registration and app-scoped passkeys. Optional OIDC also requires its callback registration to change. |
+| **`SECRETS_ENC_KEY`** | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and temporary browser state. The INTYGA service key stays in deployment secrets. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
 | **Single instance** | Rate limits and the tick guard are in-process. Run exactly one container. Two replicas would double the allowances; correctness holds, but the guards weaken. |
 
 ## 1. Prerequisites
 
 - An **INTYGA workspace**, with an administrator who can use **Integrations → App sign-in** and create API keys.
-  Your INTYGA deployment must support App sign-in, SERVICE keys and online trust-anchor exports.
+  Your INTYGA deployment must support member applications, SERVICE keys and application trust-anchor exports. OIDC App sign-in is optional.
 - A **Postgres** database for Intelligence alone, never INTYGA's database. The project is developed and
   tested against Postgres 16.
 - A place to run one container (Fly.io, Cloud Run with `--max-instances=1`, a VM, Kubernetes with
@@ -42,18 +42,17 @@ depend on it.
 
 **Done when:** you can reach an empty Postgres from where the container will run.
 
-## 2. INTYGA side — register sign-in and approval credentials
+## 2. INTYGA side — register the embedded application
 
-1. In **Integrations → App sign-in**, register the exact redirect URI
-   `https://<hostname>/auth/callback`. Save the public OIDC client ID; there is no OIDC client secret.
-2. In **API Keys → Create a service and its key**, create a SERVICE identity and save its client ID
-   and secret in your secret manager. This key requests approvals under the workspace's rules.
-3. Configure the service's approval rules and approvers, then export the online trust anchor from
-   **Approval Rules**. It pins the approvers' public keys and INTYGA console's WebAuthn origin/RP ID.
-4. Copy the workspace ID from **Settings**, plus the gateway and console URLs.
+Create a SERVICE identity and API key, and configure its ordinary workspace approval rules.
+Register Intelligence under **Integrations → Member applications** with its exact HTTPS origin
+and that service client ID. The RP ID is the origin hostname; it cannot overlap the console’s
+passkey scope. Save the returned application ID and short-lived ownership proof.
 
-**Done when:** you have the OIDC client ID, SERVICE client ID and secret, and an online trust anchor
-whose `tenantId` matches the workspace. No signing key or passkey is created on Intelligence's domain.
+Only active human workspace members can link application credentials. External platform subjects
+cannot use this path. Template recognition is advisory and grants no authority.
+
+**Done when:** the service and member application exist in the intended workspace.
 
 ## 3. Configure the environment
 
@@ -62,9 +61,10 @@ Generate each secret with `openssl rand -base64 32`. The server **refuses to sta
 `DATABASE_URL`, `TICK_TOKEN` or `SECRETS_ENC_KEY` is missing or a placeholder, so a bad config fails at
 deploy instead of later.
 
-Set `SETUP_TOKEN` only if you will finish setup in the browser (step 6a). Remove it afterwards.
-Set `PUBLIC_URL` to the external HTTPS origin so webhook links use the right address behind TLS.
-For a private INTYGA console, also set `INTYGA_CONSOLE_URL`.
+Set `PUBLIC_URL`, `INTYGA_URL`, `INTYGA_CONSOLE_URL`, `INTYGA_WORKSPACE_ID`, the SERVICE client ID
+and secret, and `INTYGA_EMBEDDED_APPLICATION_ID`. Mount `config/` read-only and set
+`INTYGA_TRUST_ANCHOR_FILE` and `INTYGA_EMBEDDED_REGISTRATION_FILE` to the files inside it.
+There is no browser setup token or database credential binding. `INTYGA_OIDC_CLIENT_ID` is optional.
 
 **Done when:** every uncommented variable in the template has a value in your secret store.
 
@@ -94,29 +94,23 @@ Run the image with your environment. It listens on `PORT` (4100) on both IPv4 an
 
 **Done when:** `https://<hostname>/ready` returns `{"ok":true,…}`.
 
-## 6. Connect the workspace and sign in
+## 6. Prove ownership, link members and sign in
 
-**6a. In the browser.** With `SETUP_TOKEN` set, open `https://<hostname>/` and enter the setup token,
-the credentials from step 2, and this instance's origin. Sign in through INTYGA with an existing
-workspace administrator's passkey. Then remove `SETUP_TOKEN` and redeploy.
+Serve the registration proof at `/.well-known/intyga-embedded` by mounting its file and setting
+`INTYGA_EMBEDDED_REGISTRATION_FILE`. Choose **Verify ownership** in INTYGA before the proof
+expires. A copied Intelligence template marker does not satisfy this proof.
 
-**6b. From the CLI**, with no browser setup:
+Each member chooses **Link my INTYGA membership** from Intelligence, approves with their console
+passkey, and creates a new passkey after returning to Intelligence. The one-use grant is bound to
+the member, application, origin, version and initiating browser through PKCE.
 
-```bash
-docker exec <container> node_modules/.bin/tsx scripts/provision-tenant.ts default
-docker exec <container> node_modules/.bin/tsx scripts/bind-workspace.ts \
-  --base-url https://api.intyga.com --console-url https://app.intyga.com \
-  --workspace-id <workspace-id> --oidc-client-id <oidc-id> \
-  --service-client-id <service-id> --service-secret-file /run/secrets/service.secret \
-  --trust-anchor /run/secrets/trust-anchor.json --origin https://<hostname>
-```
+Export the application's trust anchor from INTYGA Member applications and mount it as
+`INTYGA_TRUST_ANCHOR_FILE`. Its workspace must match `INTYGA_WORKSPACE_ID`. Refresh it after
+passkey additions or revocations. Neither the service credential nor this anchor is stored in the
+Intelligence database.
 
-Mount those files in the container. The script stores the service secret encrypted and the public
-trust anchor in the database. Sign in at `https://<hostname>/login` through INTYGA.
-
-**Done when:** an INTYGA workspace ADMIN can sign in, **Settings → Test connection** succeeds, and
-one approved change completes. Manage additional administrators and passkeys in INTYGA; keep a
-second administrator or recovery credential available there. MEMBERs can read Intelligence.
+**Done when:** an ADMIN signs in with an application passkey, **Settings → Test connection**
+succeeds, and a protected change is approved in place and applied. MEMBERs can read Intelligence.
 
 ## 7. Schedule the tick
 
@@ -152,15 +146,15 @@ recent **Last delivered**.
 | :--- | :--- |
 | **Upgrade** | Build the new image, run step 4's migration, then replace the container. |
 | **Backups** | Postgres backups with point-in-time recovery. Intelligence holds derived observations, not a system of record, but it does hold connector configuration and history. Test a restore once. |
-| **Lost passkey** | Use INTYGA's account/passkey recovery and workspace administration. Intelligence has no separate passkey enrolment or invite mechanism. |
-| **Rotate the SERVICE secret or trust anchor** | Settings → Credentials, as a signed-in ADMIN. The replacement anchor must name the connected workspace. INTYGA still checks every approval at redemption. |
-| **Change workspace** | Use the approved workspace-rebind action, or the operator CLI with database access. Sign in to the new workspace and install its matching credentials and anchor. |
+| **Lost passkey** | Recover the INTYGA account, link a replacement application passkey, and refresh the mounted application trust anchor. Revocation/recovery invalidates embedded signing eligibility. |
+| **Rotate the SERVICE secret or trust anchor** | Update the deployment secret or mounted application anchor and restart. The anchor must name the connected workspace. INTYGA rechecks eligibility at redemption. |
+| **Change workspace** | Replace deployment configuration and the mounted anchor, register the application in the new workspace, and restart. The binding fingerprint invalidates old sessions and pending actions. |
 | **Watch** | Alert on `/ready` failing, and on the tick scheduler's failures. Nothing else pages you if ticks stop: findings simply stop appearing. |
 
 ## Security properties to know
 
 - Intelligence **may ask INTYGA for approval and may never grant or bypass it** (`pnpm check:boundary`).
-- **Identity comes from INTYGA OIDC with PKCE.** Signed tokens bind the person, workspace and role.
+- **Embedded identity comes from the active workspace membership bound to the passkey that signed the browser’s login approval.** Optional OIDC verifies signed identity tokens with PKCE.
   Intelligence uses server-side sessions; role changes are refreshed at sign-in. Sessions expire after
   12 hours unless revoked locally, so upstream membership changes do not instantly revoke them.
 - **Single-tenant per deployment, no row-level security.** Do not host two unrelated organisations on
@@ -168,3 +162,10 @@ recent **Last delivered**.
 - **What leaves the host:** sign-in exchanges and approval descriptions, targets and parameters to
   INTYGA; alert payloads to destinations you activated;
   judgment requests only if you enabled that provider.
+
+- Application credentials are separate from console credentials. A service cannot enroll an email
+  address as somebody else, rewrite a human DID, or use an application credential for console login.
+- Embedded approvals use the ordinary policy engine: quorum, requester exclusions, hardware rules,
+  expiry and one-use redemption still apply. Unsupported hardware evidence fails closed.
+- An administrator can pin arbitrary public keys in an anchor. A bad anchor can make actions fail;
+  it cannot skip INTYGA's approval and redemption checks.

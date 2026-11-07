@@ -1,7 +1,9 @@
+import { writeFileSync } from "node:fs"
+import { testDeployment } from "../test/deployment.ts"
 import assert from "node:assert/strict"
 import { after, before, beforeEach, test } from "node:test"
 import type { FastifyInstance } from "fastify"
-import { anchor, CLIENT_ID, ORIGIN, signedReceipt, stubGateway, WORKSPACE } from "../test/intyga.ts"
+import { anchor, ORIGIN, signedReceipt, stubGateway } from "../test/intyga.ts"
 
 const TEST_URL = process.env.TEST_DATABASE_URL
 const skip = TEST_URL ? false : "TEST_DATABASE_URL is not set"
@@ -9,17 +11,18 @@ if (TEST_URL) {
   if (!/test/i.test(new URL(TEST_URL).pathname)) throw new Error("Expected a test database")
   process.env.DATABASE_URL = TEST_URL
 }
-// Exercise the fail-closed production setup rules, including an unset or weak setup token.
+// Exercise production cookie and authentication behavior.
 process.env.NODE_ENV = "production"
 process.env.SECRETS_ENC_KEY = "test-only-encryption-key-with-enough-entropy"
 process.env.LOG_LEVEL = "silent"
-const SETUP_TOKEN = "test-only-operator-setup-token"
+let deployment: ReturnType<typeof testDeployment>
 let prisma: typeof import("../store/client.ts")["prisma"]
 let app: FastifyInstance
 let gateway: Awaited<ReturnType<typeof stubGateway>>
 before(async () => {
   if (skip) return
   gateway = await stubGateway()
+  deployment = testDeployment(gateway.baseUrl, gateway.config.serviceClientId, gateway.config.serviceSecret)
   prisma = (await import("../store/client.ts")).prisma
   app = (await import("./app.ts")).buildApp()
   await app.ready()
@@ -29,29 +32,17 @@ after(async () => {
   await app.close()
   await gateway.app.close()
   await prisma.$disconnect()
+  deployment.dispose()
 })
 beforeEach(async () => {
   if (skip) return
-  process.env.SETUP_TOKEN = SETUP_TOKEN
+  deployment.apply()
   gateway.reset()
   const tables = await prisma.$queryRaw<
     { tablename: string }[]
   >`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`
   await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(", ")} CASCADE`)
 })
-function details() {
-  return {
-    setupToken: SETUP_TOKEN,
-    baseUrl: gateway.baseUrl,
-    consoleUrl: gateway.config.consoleUrl,
-    workspaceId: WORKSPACE,
-    oidcClientId: CLIENT_ID,
-    serviceClientId: gateway.config.serviceClientId,
-    serviceSecret: gateway.config.serviceSecret,
-    trustAnchor: JSON.stringify(anchor),
-    origin: ORIGIN,
-  }
-}
 function form(url: string, values: Record<string, string>, cookie = "") {
   return app.inject({
     method: "POST",
@@ -61,9 +52,8 @@ function form(url: string, values: Record<string, string>, cookie = "") {
   })
 }
 async function connect() {
-  const response = await form("/settings/bind", details())
-  assert.equal(response.statusCode, 303, response.body)
-  assert.equal(response.headers.location, "/login")
+  const response = await app.inject({ url: "/" })
+  assert.equal(response.statusCode, 401, response.body)
   return prisma.tenant.findFirstOrThrow()
 }
 async function signIn(role: "ADMIN" | "MEMBER" = "ADMIN") {
@@ -99,106 +89,100 @@ function poll(cookie: string) {
   return app.inject({ method: "GET", url: `/api/actions/${gateway.state.nonce}`, headers: { cookie } })
 }
 
-test("an unconnected instance exposes setup and public health/demo, but no private pages or writes", {
+test("an unconfigured instance shows status only and cannot be configured through HTTP", {
   skip,
 }, async () => {
+  delete process.env.INTYGA_SERVICE_CLIENT_SECRET
   const home = await app.inject({ url: "/" })
   assert.equal(home.statusCode, 200)
-  assert.match(home.body, /Connect your INTYGA workspace/)
-  assert.match(home.body, /name="setupToken"/)
+  assert.match(home.body, /connection is not configured/)
+  assert.doesNotMatch(home.body, /<form|type="password"/)
   for (const url of ["/connectors", "/members", "/settings", "/api/findings"]) {
     assert.equal((await app.inject({ url })).statusCode, 409, url)
-    const page = await app.inject({ url, headers: { accept: "text/html" } })
-    assert.equal(page.statusCode, 303)
-    assert.equal(page.headers.location, "/")
   }
-  for (const url of ["/api/actions/open", "/settings/credentials", "/connectors"]) {
-    assert.equal((await app.inject({ method: "POST", url, payload: {} })).statusCode, 409, url)
+  for (const url of ["/settings/bind", "/settings/credentials", "/api/actions/open"]) {
+    assert.equal((await form(url, { serviceSecret: "cannot-configure-over-http" })).statusCode, 409)
   }
   assert.equal((await app.inject({ url: "/health" })).statusCode, 200)
   assert.equal((await app.inject({ url: "/demo" })).statusCode, 200)
-  assert.equal(await prisma.member.count(), 0)
-  assert.equal(await prisma.connection.count(), 0)
-})
-
-test("missing and incorrect setup tokens never connect a workspace", { skip }, async () => {
-  const { setupToken: _token, ...without } = details()
-  assert.equal((await form("/settings/bind", without)).statusCode, 400)
-  assert.equal((await form("/settings/bind", { ...details(), setupToken: "wrong" })).statusCode, 403)
   assert.equal(await prisma.tenant.count(), 0)
 })
 
-test("setup validation preserves every submitted field so the operator can correct and retry", {
-  skip,
-}, async () => {
-  const decode = (s: string) =>
-    s
-      .replace(/&quot;/g, '"')
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&amp;/g, "&")
-  for (const [changes, status] of [
-    [{ baseUrl: "not a URL" }, 400],
-    [{ setupToken: "wrong" }, 403],
-    [{ trustAnchor: "garbled" }, 400],
-    [{ trustAnchor: JSON.stringify({ ...anchor, tenantId: "foreign" }) }, 400],
-    [
-      { workspaceId: '"><script>alert(1)</script>', trustAnchor: "</textarea><script>alert(2)</script>" },
-      400,
-    ],
-  ] as const) {
-    const submitted = { ...details(), ...changes, serviceSecret: 'pasted"secret<&>' }
-    const response = await form("/settings/bind", submitted)
-    assert.equal(response.statusCode, status)
-    assert.equal(response.headers["cache-control"], "no-store")
-    assert.doesNotMatch(response.body, /<script>|<\/textarea><script>/)
-    for (const [name, expected] of Object.entries(submitted)) {
-      const field = response.body.match(
-        name === "trustAnchor"
-          ? /<textarea name="trustAnchor"[^>]*>([\s\S]*?)<\/textarea>/
-          : new RegExp(`<input name="${name}"[^>]*value="([^"]*)"`),
-      )
-      assert.ok(field, name)
-      assert.equal(decode(field[1] ?? ""), expected, name)
-    }
-    assert.equal(await prisma.tenant.count(), 0)
-  }
-  await connect()
-  assert.equal(await prisma.tenant.count(), 1)
-})
-
-test("production browser setup is disabled without a token and refuses placeholders", { skip }, async () => {
-  delete process.env.SETUP_TOKEN
-  const home = await app.inject({ url: "/" })
-  assert.match(home.body, /Browser setup is disabled/)
-  assert.doesNotMatch(home.body, /name="setupToken"/)
-  assert.equal((await form("/settings/bind", details())).statusCode, 403)
-  process.env.SETUP_TOKEN = "dev-setup-token-change-me"
-  assert.equal((await form("/settings/bind", details())).statusCode, 503)
-  assert.equal(await prisma.tenant.count(), 0)
-})
-
-test("connecting saves encrypted credentials, creates no local admin and cannot be repeated unsigned", {
+test("deployment configuration creates local data storage without copying connection settings", {
   skip,
 }, async () => {
   const tenant = await connect()
-  const { decryptSecret } = await import("../store/crypto.ts")
-  assert.equal(tenant.intygaWorkspaceId, WORKSPACE)
-  assert.equal(tenant.intygaOidcClientId, CLIENT_ID)
-  assert.notEqual(tenant.intygaServiceSecretCipher, gateway.config.serviceSecret)
-  assert.equal(decryptSecret(tenant.intygaServiceSecretCipher ?? ""), gateway.config.serviceSecret)
-  assert.deepEqual(tenant.intygaTrustAnchor, anchor)
+  assert.deepEqual(Object.keys(tenant).sort(), ["createdAt", "id", "name", "slug"])
   assert.equal(await prisma.member.count(), 0)
   assert.equal((await prisma.connection.findFirstOrThrow()).active, false)
-  assert.equal((await form("/settings/bind", details())).statusCode, 401)
-  assert.equal((await form("/settings/bind", details(), await signIn())).statusCode, 409)
+  const cookie = await signIn()
+  const settings = await app.inject({ url: "/settings", headers: { cookie } })
+  assert.match(settings.body, /Managed through deployment environment/)
+  assert.doesNotMatch(settings.body, /settings\/credentials|workspace\.rebind/)
+  assert.ok(!settings.body.includes(gateway.config.serviceSecret))
+  assert.equal((await form("/settings/bind", {}, cookie)).statusCode, 404)
+  assert.equal((await form("/settings/credentials", {}, cookie)).statusCode, 404)
 })
 
-test("setup refuses malformed or foreign-workspace anchors", { skip }, async () => {
-  for (const trustAnchor of ["garbled", JSON.stringify({ ...anchor, tenantId: "foreign" })]) {
-    assert.equal((await form("/settings/bind", { ...details(), trustAnchor })).statusCode, 400)
+test("embedded first-time setup is reachable from home before installing an application anchor", {
+  skip,
+}, async () => {
+  process.env.INTYGA_EMBEDDED_APPLICATION_ID = "81627773-ecde-4833-a732-1b0afd0b8f93"
+  writeFileSync(deployment.anchorPath, JSON.stringify({ ...anchor, approvers: [] }))
+  for (const url of ["/", "/login"]) {
+    const response = await app.inject({ url, headers: { accept: "text/html" } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /Set up your Intelligence passkey/)
+    assert.match(response.body, /id="embedded-link"/)
+    assert.match(response.body, /id="embedded-login" disabled/)
   }
-  assert.equal(await prisma.tenant.count(), 0)
+  const linked = await app.inject({
+    method: "POST",
+    url: "/embedded/link/start",
+    headers: { origin: ORIGIN, "x-intelligence-login": "1" },
+    payload: {},
+  })
+  assert.equal(linked.statusCode, 200, linked.body)
+  assert.equal(
+    new URL(linked.json().url).searchParams.get("applicationId"),
+    process.env.INTYGA_EMBEDDED_APPLICATION_ID,
+  )
+  const invalidState = await app.inject({
+    method: "POST",
+    url: "/embedded/link/options",
+    headers: { origin: ORIGIN, "x-intelligence-login": "1" },
+    payload: { token: "a".repeat(43), state: "b".repeat(43) },
+  })
+  assert.equal(invalidState.statusCode, 403, invalidState.body)
+  assert.match(invalidState.body, /another browser/)
+  const denied = await app.inject({
+    method: "POST",
+    url: "/api/actions/open",
+    payload: { action: "intelligence.service.create", params: { name: "unauthorized" } },
+  })
+  assert.equal(denied.statusCode, 409)
+})
+
+test("a foreign workspace trust anchor locks sign-in and privileged routes", { skip }, async () => {
+  await connect()
+  const cookie = await signIn()
+  writeFileSync(deployment.anchorPath, JSON.stringify({ ...anchor, tenantId: "foreign" }))
+  assert.equal((await open(cookie)).statusCode, 409)
+  assert.equal((await form("/login/begin", {})).statusCode, 404)
+})
+
+test("changing the deployment identity invalidates old sessions and pending actions", { skip }, async () => {
+  await connect()
+  const cookie = await signIn()
+  assert.equal((await open(cookie)).statusCode, 200)
+  const tenant = await prisma.tenant.findFirstOrThrow()
+  process.env.INTYGA_SERVICE_CLIENT_ID = "replacement-service-key"
+  assert.equal((await app.inject({ url: "/settings", headers: { cookie } })).statusCode, 401)
+  const { pollAction } = await import("../actions/execute.ts")
+  await assert.rejects(
+    pollAction({ tenantId: tenant.id, nonce: gateway.state.nonce }),
+    /configuration changed/,
+  )
 })
 
 test("the OIDC callback creates the verified member and session, and refreshes their role at sign-in", {
@@ -232,7 +216,7 @@ test("a refused callback clears login state and creates neither member nor sessi
   assert.equal(await prisma.session.count(), 0)
 })
 
-test("MEMBER cannot open actions, replace credentials or test the service key", { skip }, async () => {
+test("MEMBER cannot open actions or test the service key", { skip }, async () => {
   await connect()
   const cookie = await signIn("MEMBER")
   const response = await open(cookie)
@@ -240,35 +224,11 @@ test("MEMBER cannot open actions, replace credentials or test the service key", 
   assert.match(response.json().error, /administrator/)
   assert.equal(
     (await form("/settings/credentials", { serviceSecret: "replacement" }, cookie)).statusCode,
-    403,
+    404,
   )
   assert.equal((await form("/settings/test", {}, cookie)).statusCode, 403)
   assert.equal(await prisma.pendingAction.count(), 0)
   assert.equal(gateway.state.authorizeCalls.length, 0)
-})
-
-test("credential repair rejects foreign and missing tenant IDs atomically, but accepts same-workspace keys", {
-  skip,
-}, async () => {
-  const tenant = await connect()
-  const cookie = await signIn()
-  for (const tenantId of ["foreign", undefined]) {
-    const response = await form(
-      "/settings/credentials",
-      { serviceSecret: "must-not-be-written", trustAnchor: JSON.stringify({ ...anchor, tenantId }) },
-      cookie,
-    )
-    assert.equal(response.statusCode, 400)
-    const stored = await prisma.tenant.findFirstOrThrow()
-    assert.equal(stored.intygaServiceSecretCipher, tenant.intygaServiceSecretCipher)
-    assert.deepEqual(stored.intygaTrustAnchor, anchor)
-  }
-  const refreshed = { ...anchor, epoch: 2 }
-  assert.equal(
-    (await form("/settings/credentials", { trustAnchor: JSON.stringify(refreshed) }, cookie)).statusCode,
-    303,
-  )
-  assert.deepEqual((await prisma.tenant.findFirstOrThrow()).intygaTrustAnchor, refreshed)
 })
 
 test("polling waits for approval, verifies frozen parameters, redeems once and executes once", {
@@ -318,3 +278,63 @@ for (const scenario of [
     assert.equal(gateway.state.consumeCalls.length, scenario === "used receipt" ? 1 : 0)
   })
 }
+
+test("normal approval signs in its browser without an OIDC client and cannot be redeemed twice", {
+  skip,
+}, async () => {
+  delete process.env.INTYGA_OIDC_CLIENT_ID
+  await connect()
+  const login = await app.inject({ url: "/login" })
+  assert.match(login.body, /Request sign-in approval/)
+  assert.doesNotMatch(login.body, /name="email"/)
+  const started = await app.inject({
+    method: "POST",
+    url: "/login/approval/begin",
+    headers: { origin: ORIGIN, "x-intelligence-login": "1" },
+  })
+  assert.equal(started.statusCode, 200, started.body)
+  const state = started.cookies.find((c) => c.name === "intelligence_approval_login")
+  assert.ok(state)
+  assert.equal(state.httpOnly, true)
+  assert.equal(state.secure, true)
+  const cookie = `${state.name}=${state.value}`
+  const pollLogin = (value = cookie) =>
+    app.inject({ url: "/login/approval/status", headers: { cookie: value } })
+  assert.equal((await pollLogin("")).statusCode, 401)
+  assert.equal((await pollLogin()).json().status, "pending")
+  const frozen = gateway.state.authorizeCalls[0]
+  assert.ok(frozen)
+  gateway.state.status = "APPROVED"
+  gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+  const finished = await pollLogin()
+  assert.equal(finished.statusCode, 200, finished.body)
+  const session = finished.cookies.find((c) => c.name === "intelligence_session")
+  assert.ok(session)
+  assert.equal(
+    (await app.inject({ url: "/settings", headers: { cookie: `${session.name}=${session.value}` } }))
+      .statusCode,
+    200,
+  )
+  const member = await prisma.member.findFirstOrThrow()
+  assert.equal(member.role, "ADMIN")
+  assert.equal(member.externalId, `approved-browser:${gateway.state.nonce}`)
+  assert.equal((await prisma.session.findFirstOrThrow()).receiptNonce, gateway.state.nonce)
+  gateway.state.consumeOk = false
+  assert.equal((await pollLogin()).statusCode, 401)
+  assert.equal(await prisma.session.count(), 1)
+})
+
+test("cross-origin approval sign-in cannot replace a browser's request", { skip }, async () => {
+  await connect()
+  for (const headers of [
+    {},
+    { origin: "https://attacker.example", "x-intelligence-login": "1" },
+    { origin: ORIGIN },
+  ]) {
+    assert.equal(
+      (await app.inject({ method: "POST", url: "/login/approval/begin", headers })).statusCode,
+      403,
+    )
+  }
+  assert.equal(gateway.state.authorizeCalls.length, 0)
+})

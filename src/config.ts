@@ -48,8 +48,12 @@ export const config = {
   isProdLike,
   port: num("PORT", 4100),
   /** Canonical external origin when TLS terminates at a reverse proxy. */
-  publicUrl: process.env.PUBLIC_URL ? publicOrigin(process.env.PUBLIC_URL) : null,
-  intygaConsoleUrl: publicOrigin(process.env.INTYGA_CONSOLE_URL ?? "https://app.intyga.com"),
+  get publicUrl(): string | null {
+    return process.env.PUBLIC_URL ? publicOrigin(process.env.PUBLIC_URL) : null
+  },
+  get intygaConsoleUrl(): string {
+    return publicOrigin(process.env.INTYGA_CONSOLE_URL ?? "https://app.intyga.com")
+  },
 
   /**
    * A getter, not a value.
@@ -66,23 +70,6 @@ export const config = {
   /** Bearer token for POST /internal/tick. Held by the scheduler, not by a person. */
   get tickToken(): string {
     return secret("TICK_TOKEN", "dev-tick-token-change-me")
-  },
-
-  /**
-   * Required to complete first-time setup from the browser (`POST /settings/bind`).
-   *
-   * Before a workspace is bound nobody exists who could approve anything, so the setup form cannot
-   * be gated by a passkey — and without some secret, whoever finds a freshly deployed instance first
-   * binds it to THEIR workspace and becomes its administrator. The operator holds this; a stranger
-   * does not.
-   *
-   * `null` in production when unset: browser setup is then disabled and `scripts/bind-workspace.ts`
-   * (which needs the database credential) is the only way in. A placeholder or short value throws,
-   * at the moment of use rather than at boot, because it stops mattering once setup is done.
-   */
-  get setupToken(): string | null {
-    if (isProdLike && !process.env.SETUP_TOKEN) return null
-    return secret("SETUP_TOKEN", "dev-setup-token-change-me")
   },
 
   /** Encrypts per-connection secrets at rest. */
@@ -124,25 +111,14 @@ export const config = {
     timeoutMs: num("TYPESAFE_TIMEOUT_MS", 10_000),
   },
 
-  /**
-   * INTYGA bootstrap binding — environment variables seed the FIRST tenant before there is a row to
-   * read (scripts/bind-workspace.ts writes the row); a stored binding always wins. Unset means
-   * sign-in and privileged actions are refused outright; it never means they are allowed.
-   *
-   * The service key (client id + secret) is an ordinary INTYGA API key for a SERVICE identity: it
-   * can ask for an approval under the workspace's own rules and nothing else. The trust anchor is
-   * the file exported from the console's Approval Rules page — public keys only.
-   */
+  /** Optional private route to the operator-configured public gateway. */
   intyga: {
-    baseUrl: process.env.INTYGA_URL ?? null,
-    /** Optional server-only route to INTYGA_URL, e.g. Docker's host.docker.internal in local dev. */
-    internalUrl: process.env.INTYGA_INTERNAL_URL ?? null,
-    workspaceId: process.env.INTYGA_WORKSPACE_ID ?? null,
-    oidcClientId: process.env.INTYGA_OIDC_CLIENT_ID ?? null,
-    serviceClientId: process.env.INTYGA_SERVICE_CLIENT_ID ?? null,
-    serviceSecret: process.env.INTYGA_SERVICE_CLIENT_SECRET ?? null,
-    /** The trust anchor file's JSON text. */
-    trustAnchor: process.env.INTYGA_TRUST_ANCHOR ?? null,
+    get baseUrl(): string | null {
+      return process.env.INTYGA_URL ?? null
+    },
+    get internalUrl(): string | null {
+      return process.env.INTYGA_INTERNAL_URL ?? null
+    },
     timeoutMs: num("INTYGA_TIMEOUT_MS", 10_000),
   },
 

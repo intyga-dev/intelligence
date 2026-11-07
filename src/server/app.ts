@@ -1,9 +1,16 @@
+import { readApprovalTicket } from "../embedded/approval-link.ts"
+import { embeddedApprovalPage } from "../ui/auth.ts"
+import { embeddedRequest } from "../gate/embedded.ts"
+import { beginEmbeddedLink, readEmbeddedLink, LINK_COOKIE } from "../embedded/link.ts"
+import { embeddedLinkPage } from "../ui/auth.ts"
+import { intelligenceMarker, registrationProof } from "../embedded/registration.ts"
 import Fastify, { type FastifyInstance } from "fastify"
 import { z } from "zod"
 import { ALERT_RULE_INPUT, createAlertRule } from "../actions/registry.ts"
 import { UnsafeTargetError } from "../alerts/deliver.ts"
-import { ActionError, openAction, pollAction, tenantBinding } from "../actions/execute.ts"
-import { GateError, parseTrustAnchor, resolveGateConfig, testConnection } from "../gate/client.ts"
+import { ActionError, openAction, pollAction } from "../actions/execute.ts"
+import { GateError, testConnection } from "../gate/client.ts"
+import { deploymentStatus, resolveGateConfig, resolveConnectionConfig } from "../gate/deployment.ts"
 import { AuthError, beginLogin, completeLogin, LOGIN_COOKIE } from "../auth/oidc.ts"
 import { gatewayTransportUrl } from "../gate/transport.ts"
 import {
@@ -17,6 +24,13 @@ import {
   sessionCookie,
 } from "../auth/session.ts"
 import { loginPage } from "../ui/auth.ts"
+import {
+  APPROVAL_LOGIN_COOKIE,
+  beginApprovalLogin,
+  completeApprovalLogin,
+  readApprovalLogin,
+  stampApprovalCredential,
+} from "../auth/approval.ts"
 import { config } from "../config.ts"
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { createLimiter } from "./ratelimit.ts"
@@ -63,7 +77,6 @@ import {
   type JudgmentAuditRow,
   judgmentPage,
   membersPage,
-  type OnboardingValues,
   onboardingPage,
   overviewPage,
   settingsPage,
@@ -173,6 +186,13 @@ export function buildApp(): FastifyInstance {
 
   // ─── health ────────────────────────────────────────────────────────────────────────────────────
 
+  app.get("/.well-known/intyga-intelligence", async () => intelligenceMarker)
+  app.get("/.well-known/intyga-embedded", async (_req, reply) => {
+    reply.header("Cache-Control", "no-store")
+    const proof = registrationProof()
+    return proof ?? reply.code(404).send({ error: "no active origin verification" })
+  })
+
   app.get("/health", async () => ({ ok: true }))
   app.get("/ready", async (_req, reply) => {
     try {
@@ -276,10 +296,23 @@ export function buildApp(): FastifyInstance {
   // forgotten decorator away from an open admin console.
   const PUBLIC_EXACT = new Set([
     "/demo",
+    "/.well-known/intyga-embedded",
+    "/.well-known/intyga-intelligence",
     "/health",
     "/ready",
     "/login",
     "/login/begin",
+    "/login/approval/begin",
+    "/login/approval/status",
+    "/login/approval/embedded/options",
+    "/login/approval/embedded/verify",
+    "/embedded/approve",
+    "/embedded/approve/options",
+    "/embedded/approve/verify",
+    "/embedded/link/start",
+    "/embedded/link/callback",
+    "/embedded/link/options",
+    "/embedded/link/verify",
     "/auth/callback",
     "/logout",
   ])
@@ -293,24 +326,16 @@ export function buildApp(): FastifyInstance {
 
   app.decorateRequest("actor", null)
 
-  /** Connected to an INTYGA workspace: sign-in and approvals can work. */
-  const bound = <T extends { intygaBaseUrl: string | null; intygaOidcClientId: string | null }>(
-    t: T | null,
-  ): t is T => Boolean(t?.intygaBaseUrl && t.intygaOidcClientId)
-
   app.addHook("preHandler", async (req, reply) => {
     const r = req as typeof req & { actor: SessionActor | null }
     r.actor = await resolveSession(readCookie(req.headers.cookie, COOKIE))
     if (isPublic(req.url)) return
 
     const t = await tenant()
-    // Not bound yet: nobody exists who could sign in, so the setup form is the ONLY thing reachable.
-    // Everything else is closed rather than open — an unbound instance is exactly the one a stranger
-    // is most likely to find first, and "no workspace, so no auth" used to let them create connectors,
-    // replace the signing key and read the console. The setup form itself is gated by SETUP_TOKEN.
-    if (!bound(t)) {
+    // An unconfigured instance exposes only status. HTTP requests cannot configure its authority.
+    if (!deploymentStatus().configured || !t) {
       const path = req.url.split("?")[0] ?? req.url
-      if (path === "/" || path === "/settings/bind") return
+      if (path === "/") return
       if ((req.headers.accept ?? "").includes("text/html")) return reply.redirect("/", 303)
       return reply.code(409).send({ error: "this instance is not connected to an INTYGA workspace yet" })
     }
@@ -338,57 +363,255 @@ export function buildApp(): FastifyInstance {
     return a ? { actor: { label: a.label, externalId: a.externalId } } : {}
   }
 
-  /**
-   * Whether browser setup is available. A placeholder SETUP_TOKEN in production counts as available
-   * here so the form renders — submitting it is what explains the problem, in words.
-   */
-  const setupEnabled = (): boolean => {
-    try {
-      return config.setupToken !== null
-    } catch {
-      return true
+  const onboarding = (): string => {
+    const status = deploymentStatus()
+    if (!status.configured) {
+      try {
+        if (resolveConnectionConfig().embeddedApplicationId)
+          return loginPage({ embeddedEnabled: true, setupPending: true })
+      } catch {
+        // Connection details must be supplied by the deployment operator first.
+      }
     }
+    return onboardingPage(status.configured ? {} : { error: status.error })
   }
-  const onboarding = (error?: string, values?: OnboardingValues): string =>
-    onboardingPage({
-      setupEnabled: setupEnabled(),
-      publicUrl: config.publicUrl,
-      consoleUrl: config.intygaConsoleUrl,
-      ...(values ? { values } : {}),
-      ...(error ? { error } : {}),
-    })
-
-  /** The origin the OIDC callback lives on: the tenant's configured one, else this deployment's. */
-  const originFor = (
-    t: { publicOrigin: string | null } | null,
-    req: { headers: { host?: string | undefined }; protocol: string },
-  ) => t?.publicOrigin ?? config.publicUrl ?? `${req.protocol}://${req.headers.host ?? "localhost"}`
 
   app.get("/login", async (req, reply) => {
     if (actorOf(req)) return reply.redirect("/", 303)
-    const t = await tenant()
+    const deployment = deploymentStatus()
+    if (!deployment.configured) {
+      return html(reply, onboarding())
+    }
     const q = req.query as { email?: string; error?: string }
     return html(
       reply,
       loginPage({
         ...(q.email ? { prefill: q.email } : {}),
         ...(q.error === "refused" ? { error: "INTYGA did not sign you in. Try again." } : {}),
-        consoleUrl: t?.intygaConsoleUrl ?? config.intygaConsoleUrl,
+        consoleUrl: config.intygaConsoleUrl,
+        oidcEnabled: Boolean(resolveGateConfig().oidcClientId),
+        embeddedEnabled: Boolean(resolveGateConfig().embeddedApplicationId),
       }),
     )
   })
+
+  const approvalLoginLimit = createLimiter({ ratePerMinute: 5, burst: 5, maxKeys: 1 })
+  const approvalCookie = (value: string, maxAge: number) =>
+    `${APPROVAL_LOGIN_COOKIE}=${value}; Path=/login/approval; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.isProdLike ? "; Secure" : ""}`
+  app.post("/login/approval/begin", async (req, reply) => {
+    reply.header("Cache-Control", "no-store")
+    const status = deploymentStatus()
+    if (!status.configured) return reply.code(503).send({ error: "INTYGA is not configured" })
+    // A browser on another site cannot silently open or replace this browser's sign-in request.
+    if (req.headers.origin !== status.config.origin || req.headers["x-intelligence-login"] !== "1")
+      return reply.code(403).send({ error: "Start sign-in from this Intelligence instance." })
+    if (!approvalLoginLimit.take("sign-in"))
+      return reply
+        .code(429)
+        .header("retry-after", String(approvalLoginLimit.retryAfter("sign-in")))
+        .send({ error: "Too many sign-in requests. Try again shortly." })
+    try {
+      const opened = await beginApprovalLogin(status.config)
+      return reply.header("set-cookie", approvalCookie(opened.cookie, 600)).send({
+        approveUrl: opened.approveUrl,
+        embedded: Boolean(status.config.embeddedApplicationId),
+        ...(opened.embeddedApprovalUrl ? { embeddedApprovalUrl: opened.embeddedApprovalUrl } : {}),
+        browserCode: opened.browserCode,
+      })
+    } catch (err) {
+      req.log.warn({ err: (err as Error).message }, "approval sign-in could not start")
+      return reply.code(502).send({ error: clientError(err, "Could not request sign-in approval.") })
+    }
+  })
+  app.get("/login/approval/status", async (req, reply) => {
+    reply.header("Cache-Control", "no-store")
+    const status = deploymentStatus()
+    if (!status.configured) return reply.code(503).send({ error: "INTYGA is not configured" })
+    try {
+      const approved = await completeApprovalLogin(
+        status.config,
+        readCookie(req.headers.cookie, APPROVAL_LOGIN_COOKIE),
+      )
+      if (approved.status === "pending") return { status: "pending" }
+      const t = await tenant()
+      if (!t) throw new AuthError("This instance is not configured.")
+      const member = await prisma.member.upsert({
+        where: {
+          tenantId_externalId: {
+            tenantId: t.id,
+            externalId: approved.member
+              ? `intyga:${approved.member.sub}`
+              : `approved-browser:${approved.nonce}`,
+          },
+        },
+        create: {
+          tenantId: t.id,
+          externalId: approved.member
+            ? `intyga:${approved.member.sub}`
+            : `approved-browser:${approved.nonce}`,
+          label: approved.member?.name ?? "Approved administrator",
+          role: approved.member?.role ?? "ADMIN",
+          lastLoginAt: new Date(),
+        },
+        update: {
+          active: true,
+          label: approved.member?.name ?? "Approved administrator",
+          role: approved.member?.role ?? "ADMIN",
+          lastLoginAt: new Date(),
+        },
+      })
+      const token = await createSession({ tenantId: t.id, memberId: member.id, receiptNonce: approved.nonce })
+      return reply
+        .header("set-cookie", [approvalCookie("", 0), sessionCookie(token)])
+        .send({ status: "approved" })
+    } catch (err) {
+      req.log.warn({ err: (err as Error).message }, "approval sign-in refused")
+      return reply
+        .code(err instanceof AuthError || err instanceof GateError ? 401 : 502)
+        .header("set-cookie", approvalCookie("", 0))
+        .send({ error: clientError(err, "Sign-in could not be completed. Start again.") })
+    }
+  })
+
+  app.setErrorHandler((error, req, reply) => {
+    req.log.error({ err: error }, "request failed")
+    if (error instanceof z.ZodError) return reply.code(400).send({ error: "Invalid request." })
+    if (error instanceof AuthError) return reply.code(403).send({ error: error.message })
+    if (error instanceof GateError) return reply.code(502).send({ error: error.message })
+    if (
+      error instanceof Error &&
+      "statusCode" in error &&
+      typeof error.statusCode === "number" &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
+    )
+      return reply.code(error.statusCode).send({ error: "Invalid request." })
+    return reply.code(500).send({ error: "The request could not be completed." })
+  })
+  const embeddedLimit = createLimiter({ ratePerMinute: 30, burst: 10, maxKeys: 1 })
+  const embeddedOrigin = (req: { headers: Record<string, unknown> }) => {
+    const cfg = resolveConnectionConfig()
+    if (
+      !cfg.embeddedApplicationId ||
+      req.headers.origin !== cfg.origin ||
+      req.headers["x-intelligence-login"] !== "1"
+    )
+      throw new AuthError("Start this ceremony from Intelligence.")
+    if (!embeddedLimit.take("embedded")) throw new AuthError("Too many passkey requests. Try again shortly.")
+    return cfg
+  }
+  const linkCookie = (value: string, maxAge: number) =>
+    `${LINK_COOKIE}=${value}; Path=/embedded/link; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${config.isProdLike ? "; Secure" : ""}`
+  app.post("/embedded/link/start", async (req, reply) => {
+    const cfg = embeddedOrigin(req)
+    const link = beginEmbeddedLink(cfg)
+    return reply
+      .header("cache-control", "no-store")
+      .header("set-cookie", linkCookie(link.cookie, 600))
+      .send({ url: link.url })
+  })
+  app.get("/embedded/link/callback", async (_req, reply) => {
+    return html(reply, embeddedLinkPage())
+  })
+  app.get("/embedded/approve", async (_req, reply) => html(reply, embeddedApprovalPage()))
+  for (const step of ["options", "verify"] as const) {
+    app.post(`/embedded/approve/${step}`, async (req, reply) => {
+      const cfg = embeddedOrigin(req)
+      const body = z
+        .object({ ticket: z.string().max(4096), response: z.unknown().optional() })
+        .strict()
+        .parse(json(req))
+      const ticket = readApprovalTicket(cfg, body.ticket)
+      return reply.header("cache-control", "no-store").send(
+        await embeddedRequest(cfg, `approve/${step}`, {
+          nonce: ticket.nonce,
+          ...(step === "verify" ? { response: body.response } : {}),
+        }),
+      )
+    })
+    app.post(`/embedded/link/${step}`, async (req, reply) => {
+      const cfg = embeddedOrigin(req)
+      const body = z
+        .object({
+          token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+          state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+          response: z.unknown().optional(),
+        })
+        .strict()
+        .parse(json(req))
+      const link = readEmbeddedLink(cfg, readCookie(req.headers.cookie, LINK_COOKIE), body.state)
+      const data = await embeddedRequest(cfg, `register/${step}`, {
+        token: body.token,
+        verifier: link.verifier,
+        ...(step === "verify" ? { response: body.response } : {}),
+      })
+      if (step === "verify") reply.header("set-cookie", linkCookie("", 0))
+      return reply.header("cache-control", "no-store").send(data)
+    })
+    app.post(`/login/approval/embedded/${step}`, async (req, reply) => {
+      embeddedOrigin(req)
+      const cfg = resolveGateConfig()
+      const cookie = readCookie(req.headers.cookie, APPROVAL_LOGIN_COOKIE)
+      const state = readApprovalLogin(cfg, cookie)
+      const body = z
+        .object({
+          response: z
+            .object({ id: z.string().min(1).max(2048) })
+            .passthrough()
+            .optional(),
+        })
+        .strict()
+        .parse(json(req))
+      const result = await embeddedRequest(cfg, `approve/${step}`, {
+        nonce: state.nonce,
+        ...(step === "verify" ? { response: body.response } : {}),
+      })
+      if (step === "verify" && body.response)
+        reply.header(
+          "set-cookie",
+          approvalCookie(stampApprovalCredential(cfg, cookie, body.response.id), 600),
+        )
+      return reply.header("cache-control", "no-store").send(result)
+    })
+    app.post(`/api/actions/:nonce/embedded/${step}`, async (req, reply) => {
+      const cfg = embeddedOrigin(req)
+      const actor = actorOf(req)
+      if (actor?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator required" })
+      const { nonce } = z.object({ nonce: z.string().min(8).max(200) }).parse(req.params)
+      const pending = await prisma.pendingAction.findFirst({
+        where: {
+          nonce,
+          tenantId: actor.tenantId,
+          bindingId: cfg.bindingId,
+          status: "AWAITING_SIGNATURE",
+          expiresAt: { gt: new Date() },
+        },
+      })
+      if (!pending) return reply.code(404).send({ error: "Approval is no longer pending" })
+      const body = z.object({ response: z.unknown().optional() }).strict().parse(json(req))
+      return reply.header("cache-control", "no-store").send(
+        await embeddedRequest(cfg, `approve/${step}`, {
+          nonce,
+          ...(step === "verify" ? { response: body.response } : {}),
+        }),
+      )
+    })
+  }
 
   // Starts a standard OpenID Connect sign-in at INTYGA (core ADR 030). The PKCE verifier and the
   // state live in an encrypted, HttpOnly cookie until the callback; the person's address is only a
   // hint for INTYGA's form — INTYGA decides who they are.
   app.post("/login/begin", async (req, reply) => {
     const t = await tenant()
-    if (!t?.intygaBaseUrl || !t.intygaOidcClientId) return reply.code(404).send({ error: "no workspace" })
+    const status = deploymentStatus()
+    if (!t || !status.configured || !status.config.oidcClientId)
+      return reply.code(404).send({ error: "OIDC sign-in is not configured" })
+    const cfg = status.config
     const parsed = z.object({ email: z.string().trim().max(254).optional() }).safeParse(req.body ?? {})
     const email = parsed.success ? parsed.data.email : undefined
     const { redirectTo, cookie } = beginLogin(
-      { baseUrl: t.intygaBaseUrl, clientId: t.intygaOidcClientId, workspaceId: t.intygaWorkspaceId },
-      originFor(t, req),
+      { baseUrl: cfg.baseUrl, clientId: status.config.oidcClientId, workspaceId: cfg.workspaceId },
+      cfg.origin,
       email,
     )
     return reply
@@ -403,18 +626,21 @@ export function buildApp(): FastifyInstance {
 
   app.get("/auth/callback", async (req, reply) => {
     const t = await tenant()
-    if (!t?.intygaBaseUrl || !t.intygaOidcClientId) return reply.code(404).send({ error: "no workspace" })
+    const status = deploymentStatus()
+    if (!t || !status.configured || !status.config.oidcClientId)
+      return reply.code(404).send({ error: "OIDC sign-in is not configured" })
+    const cfg = status.config
     const q = req.query as { code?: string; state?: string; error?: string }
     const clearLogin = `${LOGIN_COOKIE}=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0`
     try {
       const person = await completeLogin(
         {
-          baseUrl: t.intygaBaseUrl,
-          transportUrl: gatewayTransportUrl(t.intygaBaseUrl),
-          clientId: t.intygaOidcClientId,
-          workspaceId: t.intygaWorkspaceId,
+          baseUrl: cfg.baseUrl,
+          transportUrl: gatewayTransportUrl(cfg.baseUrl),
+          clientId: status.config.oidcClientId,
+          workspaceId: cfg.workspaceId,
         },
-        originFor(t, req),
+        cfg.origin,
         q,
         readCookie(req.headers.cookie, LOGIN_COOKIE),
       )
@@ -441,7 +667,7 @@ export function buildApp(): FastifyInstance {
         .code(err instanceof AuthError ? 401 : 502)
         .header("set-cookie", clearLogin)
         .type("text/html; charset=utf-8")
-        .send(loginPage({ error: message, consoleUrl: t.intygaConsoleUrl ?? config.intygaConsoleUrl }))
+        .send(loginPage({ error: message, consoleUrl: config.intygaConsoleUrl }))
     }
   })
 
@@ -457,7 +683,31 @@ export function buildApp(): FastifyInstance {
   // V0 serves one tenant, so it is "the one that exists". Every store call still takes a tenantId,
   // so turning this into real per-request auth is a change here and nowhere else.
   async function tenant() {
-    return prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } })
+    const existing = await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } })
+    if (existing || !deploymentStatus().configured) return existing
+    return prisma.$transaction(async (tx) => {
+      const t = await tx.tenant.upsert({
+        where: { slug: "default" },
+        create: { slug: "default", name: "default" },
+        update: {},
+      })
+      // The tenant row contains local data only; it grants no connection or authentication authority.
+      const connector = await tx.connection.findFirst({
+        where: { tenantId: t.id, builtIn: true, kind: "intyga" },
+      })
+      if (!connector)
+        await tx.connection.create({
+          data: {
+            tenantId: t.id,
+            kind: "intyga",
+            label: "INTYGA",
+            builtIn: true,
+            active: false,
+            secretCiphertext: encryptSecret(`whsec_${randomBytes(24).toString("base64url")}`),
+          },
+        })
+      return t
+    })
   }
   async function counts(tenantId: string) {
     const [findings, alerts, connectors] = await Promise.all([
@@ -499,9 +749,8 @@ export function buildApp(): FastifyInstance {
 
   app.get("/", async (req, reply) => {
     const t = await tenant()
-    // A tenant can exist unbound (provision-tenant.ts runs before bind-workspace.ts); it has no
-    // console to show until it is connected.
-    if (!bound(t)) return html(reply, onboarding())
+    // First-time embedded enrollment is available before the application anchor is installed.
+    if (!t || !deploymentStatus().configured) return html(reply, onboarding())
     const since = new Date(Date.now() - WINDOW_MS)
     const [stats, events, refusals, findings, c] = await Promise.all([
       overview(t.id, since),
@@ -879,7 +1128,7 @@ export function buildApp(): FastifyInstance {
       reply,
       membersPage({
         rows,
-        consoleUrl: t.intygaConsoleUrl ?? config.intygaConsoleUrl,
+        consoleUrl: config.intygaConsoleUrl,
         counts: await counts(t.id),
         ...withActor(req),
       }),
@@ -892,123 +1141,12 @@ export function buildApp(): FastifyInstance {
     return html(
       reply,
       settingsPage({
-        binding: {
-          baseUrl: t.intygaBaseUrl,
-          consoleUrl: t.intygaConsoleUrl,
-          workspaceId: t.intygaWorkspaceId,
-          oidcClientId: t.intygaOidcClientId,
-          serviceClientId: t.intygaServiceClientId,
-          hasSecret: Boolean(t.intygaServiceSecretCipher),
-          trustAnchorAt: t.intygaTrustAnchorAt,
-          origin: t.publicOrigin ?? config.publicUrl,
-        },
+        binding: resolveGateConfig(),
         retentionDays: RETENTION_DAYS,
         counts: await counts(t.id),
         ...withActor(req),
       }),
     )
-  })
-
-  const BIND = z.object({
-    // First, so a missing token is the first thing the form reports.
-    setupToken: z.string({ error: "Enter the setup token" }).min(1, "Enter the setup token").max(500),
-    baseUrl: z.url(),
-    consoleUrl: z.url(),
-    workspaceId: z.string().trim().min(1).max(200),
-    oidcClientId: z.string().trim().min(1).max(200),
-    serviceClientId: z.string().trim().min(1).max(200),
-    serviceSecret: z.string().min(1).max(4000),
-    trustAnchor: z.string().min(2).max(200_000),
-    origin: z.url().optional(),
-  })
-
-  // First-time connection: the ONE route an unbound instance serves, gated by SETUP_TOKEN. There is
-  // no administrator to enrol — the first workspace ADMIN who signs in with INTYGA is one.
-  app.post("/settings/bind", async (req, reply) => {
-    // Retain submitted values on every refusal, including secrets the operator just pasted.
-    // They only live in this response, escaped by the renderer; never cache the filled form.
-    reply.header("Cache-Control", "no-store")
-    const values: OnboardingValues = {}
-    if (req.body && typeof req.body === "object") {
-      const body = req.body as Record<string, unknown>
-      for (const name of Object.keys(BIND.shape) as (keyof OnboardingValues)[]) {
-        if (typeof body[name] === "string") values[name] = body[name]
-      }
-    }
-    const refused = (status: number, message: string) => html(reply.code(status), onboarding(message, values))
-    const parsed = BIND.safeParse(req.body)
-    if (!parsed.success) {
-      return refused(400, parsed.error.issues[0]?.message ?? "Invalid details")
-    }
-    const d = parsed.data
-    const existing = await tenant()
-    // Read before the guard: `bound` is a type predicate, so past the early return TS narrows
-    // `existing` to null even though an unbound row may exist (provision-tenant.ts creates one).
-    const existingId = existing?.id ?? null
-    if (bound(existing)) {
-      return reply.code(409).send({ error: "already connected — repointing requires an approved action" })
-    }
-    let expected: string | null
-    try {
-      expected = config.setupToken
-    } catch (err) {
-      req.log.error({ err: (err as Error).message }, "SETUP_TOKEN rejected")
-      return refused(
-        503,
-        "SETUP_TOKEN on the server is a placeholder or too short. Set a real value and restart.",
-      )
-    }
-    if (expected === null) {
-      return refused(
-        403,
-        "Browser setup is disabled on this server. Set SETUP_TOKEN, or bind from the command line " +
-          "with scripts/bind-workspace.ts.",
-      )
-    }
-    if (!tokenMatches(d.setupToken, expected)) {
-      req.log.warn("setup attempted with a wrong setup token")
-      return refused(403, "That setup token is not correct.")
-    }
-    const anchor = parseTrustAnchor(d.trustAnchor)
-    if (!anchor.ok) return refused(400, anchor.error)
-    if (anchor.anchor.tenantId !== d.workspaceId)
-      return refused(400, "The trust anchor must name the connected workspace.")
-    const data = {
-      intygaBaseUrl: d.baseUrl,
-      intygaConsoleUrl: d.consoleUrl,
-      intygaWorkspaceId: d.workspaceId,
-      intygaOidcClientId: d.oidcClientId,
-      intygaServiceClientId: d.serviceClientId,
-      intygaServiceSecretCipher: encryptSecret(d.serviceSecret),
-      intygaTrustAnchor: JSON.parse(d.trustAnchor) as object,
-      intygaTrustAnchorAt: new Date(),
-      publicOrigin: d.origin ?? config.publicUrl,
-    }
-    await prisma.$transaction(async (tx) => {
-      const t = existingId
-        ? await tx.tenant.update({ where: { id: existingId }, data, select: { id: true } })
-        : await tx.tenant.create({
-            data: { slug: "default", name: "default", ...data },
-            select: { id: true },
-          })
-      const hasBuiltIn = await tx.connection.findFirst({
-        where: { tenantId: t.id, kind: "intyga", builtIn: true },
-        select: { id: true },
-      })
-      if (!hasBuiltIn) {
-        await tx.connection.create({
-          data: {
-            tenantId: t.id,
-            kind: "intyga",
-            label: "INTYGA",
-            builtIn: true,
-            active: false,
-            secretCiphertext: encryptSecret(`whsec_${randomBytes(24).toString("base64url")}`),
-          },
-        })
-      }
-    })
-    return reply.redirect("/login", 303)
   })
 
   app.post("/settings/test", async (req, reply) => {
@@ -1017,55 +1155,12 @@ export function buildApp(): FastifyInstance {
     if (actorOf(req)?.role !== "ADMIN")
       return reply.code(403).send({ ok: false, error: "administrator only" })
     try {
-      const cfg = resolveGateConfig(await tenantBinding(t.id))
+      const cfg = resolveGateConfig()
       return await testConnection(cfg)
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, "connection test failed")
-      return { ok: false, error: clientError(err, "the stored binding could not be loaded") }
+      return { ok: false, error: clientError(err, "the deployment configuration could not be loaded") }
     }
-  })
-
-  /**
-   * Replace the service secret and/or the trust anchor without changing which workspace this tenant
-   * belongs to.
-   *
-   * Deliberately NOT an approved action. Approving it would require the binding being replaced to
-   * still work, so a rotated secret or a stale anchor could never be fixed — the failure mode this
-   * exists for. It changes no identity and grants no access: a secret the workspace does not know
-   * simply fails at the next token exchange, which `/settings/test` shows immediately. An admin can
-   * paste arbitrary approver keys; a bad anchor makes actions fail. It cannot bypass approval:
-   * INTYGA still checks the approval when Intelligence redeems it, before the action executes.
-   * Administrators only, under a live session.
-   */
-  app.post("/settings/credentials", async (req, reply) => {
-    const t = await tenant()
-    if (!t) return reply.code(404).send({ error: "no tenant" })
-    if (actorOf(req)?.role !== "ADMIN") return reply.code(403).send({ error: "administrator only" })
-    const parsed = z
-      .object({
-        serviceSecret: z.string().max(4000).optional(),
-        trustAnchor: z.string().max(200_000).optional(),
-      })
-      .safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
-    const data: {
-      intygaServiceSecretCipher?: string
-      intygaTrustAnchor?: object
-      intygaTrustAnchorAt?: Date
-    } = {}
-    if (parsed.data.serviceSecret?.trim())
-      data.intygaServiceSecretCipher = encryptSecret(parsed.data.serviceSecret.trim())
-    if (parsed.data.trustAnchor?.trim()) {
-      const anchor = parseTrustAnchor(parsed.data.trustAnchor)
-      if (!anchor.ok) return reply.code(400).send({ error: anchor.error })
-      if (anchor.anchor.tenantId !== t.intygaWorkspaceId)
-        return reply.code(400).send({ error: "The trust anchor must name the connected workspace." })
-      data.intygaTrustAnchor = JSON.parse(parsed.data.trustAnchor) as object
-      data.intygaTrustAnchorAt = new Date()
-    }
-    if (Object.keys(data).length === 0) return reply.code(400).send({ error: "nothing to update" })
-    await prisma.tenant.update({ where: { id: t.id }, data })
-    return reply.redirect("/settings", 303)
   })
 
   // ─── privileged actions ────────────────────────────────────────────────────────────────────────
@@ -1152,5 +1247,3 @@ export function buildApp(): FastifyInstance {
 
   return app
 }
-
-export { tenantBinding }

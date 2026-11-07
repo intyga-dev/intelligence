@@ -46,26 +46,7 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
-  // ─── INTYGA binding (core ADR 030) ──────────────────────────────────────────────────────────
-  // PER TENANT: the tenant's OWN workspace signs its people in (OIDC), approves its privileged
-  // actions (POST /authorize with a SERVICE key, under the workspace's own rules) and is what the
-  // trust anchor below was exported from. That is what makes "you cannot use Intelligence without
-  // INTYGA" a fact about the product rather than an implementation detail.
-  intygaBaseUrl             String?
-  intygaConsoleUrl          String?
-  /// The workspace id every receipt must name (DIV v2 tenant binding) and every id_token must carry.
-  intygaWorkspaceId         String?
-  /// The OIDC client registered for this instance in the console (App sign-in). Public, PKCE.
-  intygaOidcClientId        String?
-  /// The SERVICE identity's API key: it can ask for an approval and nothing else.
-  intygaServiceClientId     String?
-  /// Encrypted at rest. Never selected into a response.
-  intygaServiceSecretCipher String?
-  /// The trust anchor file exported from the console (approver keys, WebAuthn origin). Not secret.
-  intygaTrustAnchor         Json?
-  intygaTrustAnchorAt       DateTime?
-  /// The origin THIS tenant's Intelligence is served from: the OIDC callback and alert links use it.
-  publicOrigin              String?
+  // INTYGA connection settings belong to deployment configuration, never this database.
 
   connections Connection[]
   events      Event[]
@@ -432,6 +413,7 @@ enum PendingActionStatus {
 /// approve one thing and execute another, which is the entire class of attack the signature exists
 /// to prevent.
 model PendingAction {
+  bindingId       String
   id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId        String              @db.Uuid
   /// The INTYGA approval nonce this action is bound to.
@@ -542,6 +524,7 @@ model DetectorCursor {
 /// able to do after a laptop goes missing. The cookie carries a random token; only its SHA-256 is
 /// stored, so a database read does not yield usable sessions.
 model Session {
+  bindingId    String
   id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId     String    @db.Uuid
   memberId     String    @db.Uuid
@@ -551,24 +534,11 @@ model Session {
   lastSeenAt   DateTime  @default(now())
   expiresAt    DateTime
   revokedAt    DateTime?
-  /// The platform receipt nonce that proved this login. Provenance for "who signed in, and when".
-  receiptNonce String?
+  /// The one-use approval that granted this browser access, or null for OIDC sign-in.
+  receiptNonce String?   @unique
 
   member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
 
   @@index([memberId, expiresAt])
   @@index([expiresAt])
 }
-
-/// A login or enrolment ceremony in flight.
-///
-
-/// A one-time right to bind a passkey to one member.
-///
-/// This is what makes enrolment safe. The member's externalId is not a secret — it is typed into the
-/// login form and shown on /members — so "a member with this id exists" can never be the check that
-/// decides who may bind a credential to it: anyone could enrol their own key as "admin" and then
-/// sign in and approve changes as them. The identity being enrolled is derived from this row, which
-/// only an existing administrator (a signed action) or the operator (a CLI with database access)
-/// can create. Proof of possession of the new key proves nothing about who is holding it.
-///

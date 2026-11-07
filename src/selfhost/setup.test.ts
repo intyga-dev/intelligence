@@ -14,12 +14,11 @@ test("installer writes private secrets once and never overwrites a prior install
   assert.match(env, /POSTGRES_PASSWORD=[a-f0-9]{64}\n/)
   assert.match(env, /SELFHOST_HTTP_PORT=4200\n/)
   assert.match(env, /SECRETS_ENC_KEY=[A-Za-z0-9+/]{43}=\n/)
-  assert.match(env, /SETUP_TOKEN=[a-f0-9]{64}\n/)
-  assert.doesNotMatch(
-    env,
-    /INTYGA_(URL|SERVICE|OIDC|TRUST)/,
-    "the INTYGA binding is entered in the setup form, never generated",
-  )
+  assert.doesNotMatch(env, /SETUP_TOKEN/)
+  assert.match(env, /INTYGA_SERVICE_CLIENT_SECRET=\n/)
+  assert.match(env, /INTYGA_OIDC_CLIENT_ID=\n/)
+  assert.match(env, /INTYGA_TRUST_ANCHOR_FILE=.\/config\/intyga-trust-anchor.json\n/)
+  assert.ok(statSync(path.join(dir, "config")).isDirectory())
   assert.equal(statSync(path.join(dir, ".env.selfhost")).mode & 0o777, 0o600)
   assert.throws(() => initialiseSelfHost(dir, "https://other.example.com"), /Refusing to rotate/)
   assert.equal(readFileSync(path.join(dir, ".env.selfhost"), "utf8"), env)

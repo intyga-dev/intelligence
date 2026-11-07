@@ -14,7 +14,6 @@ export type GatedAction =
   | "intelligence.judgment.enable"
   | "intelligence.judgment.disable"
   | "intelligence.data.purge"
-  | "intelligence.workspace.rebind"
   | "intelligence.alert.activate"
   | "intelligence.alert.deactivate"
   | "intelligence.detector.enable"
@@ -192,59 +191,6 @@ export const ACTIONS = {
     },
   }),
 
-  /**
-   * Repoint this tenant at a different INTYGA workspace.
-   *
-   * The most consequential action here: the workspace is what authenticates every member, so
-   * rebinding it is the one change that could hand control of this tenant to someone else. It is
-   * therefore approved under the CURRENT workspace's rules — you must still be who you were to say
-   * who you will be.
-   *
-   * The service secret and the trust anchor are deliberately NOT parameters: signed parameters are
-   * stored in PendingAction in the clear, so routing the secret through them would write it to disk
-   * unencrypted. They are submitted separately (Settings → credentials) and the secret encrypted on
-   * arrival; what is signed is the workspace IDENTITY, which is what actually matters.
-   */
-  "intelligence.workspace.rebind": defineAction({
-    impact: "high",
-    schema: z.object({
-      baseUrl: z.url(),
-      consoleUrl: z.url(),
-      workspaceId: z.string().min(1).max(200),
-      oidcClientId: z.string().min(1).max(200),
-      serviceClientId: z.string().min(1).max(200),
-    }),
-    summary: (p: { baseUrl: string; workspaceId: string }) =>
-      `Repoint Intelligence at a DIFFERENT INTYGA workspace (${p.baseUrl}, workspace ${p.workspaceId}). ` +
-      "Members of the current workspace will no longer be able to sign in or approve anything here.",
-    run: async (
-      tenantId,
-      p: {
-        baseUrl: string
-        consoleUrl: string
-        workspaceId: string
-        oidcClientId: string
-        serviceClientId: string
-      },
-    ) => {
-      await prisma.tenant.update({
-        where: { id: tenantId },
-        data: {
-          intygaBaseUrl: p.baseUrl,
-          intygaConsoleUrl: p.consoleUrl,
-          intygaWorkspaceId: p.workspaceId,
-          intygaOidcClientId: p.oidcClientId,
-          intygaServiceClientId: p.serviceClientId,
-        },
-      })
-      // Everyone signed in belonged to the old workspace.
-      await prisma.session.updateMany({
-        where: { tenantId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      })
-      await prisma.member.updateMany({ where: { tenantId }, data: { active: false } })
-    },
-  }),
   /**
    * Turn an alert rule ON — the moment finding titles, severities and timestamps start leaving this
    * host for its destination.
