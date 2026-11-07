@@ -50,8 +50,10 @@ test("an opened approval uses the console and the gateway nonce", async () => {
     timeoutSeconds: 60,
   })
   assert.equal(result.nonce, gateway.state.nonce)
-  assert.equal(new URL(result.approveUrl).origin, gateway.config.consoleUrl)
-  assert.equal(new URL(result.approveUrl).searchParams.get("nonce"), result.nonce)
+  assert.ok(result.approveUrl, "hosted approvals must include a console approval URL")
+  const approveUrl = new URL(result.approveUrl)
+  assert.equal(approveUrl.origin, gateway.config.consoleUrl)
+  assert.equal(approveUrl.searchParams.get("nonce"), result.nonce)
   assert.equal(gateway.state.authorizeCalls[0]?.target, action.target)
 })
 
