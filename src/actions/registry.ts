@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { newSigningSecret, parseTarget } from "../alerts/deliver.ts"
 import { DETECTORS } from "../domain/detectors/index.ts"
+import { CONFIGURE_DETECTOR } from "../domain/detectors/operationalSettings.ts"
 import { isProdLike } from "../config.ts"
 import { prisma } from "../store/client.ts"
 import { decryptSecret, encryptSecret } from "../store/crypto.ts"
@@ -9,6 +10,7 @@ import { decryptSecret, encryptSecret } from "../store/crypto.ts"
 export type GatedAction =
   | "intelligence.service.create"
   | "intelligence.connector.assign-service"
+  | "intelligence.connector.configure-github"
   | "intelligence.connector.activate"
   | "intelligence.connector.deactivate"
   | "intelligence.judgment.enable"
@@ -18,6 +20,7 @@ export type GatedAction =
   | "intelligence.alert.deactivate"
   | "intelligence.detector.enable"
   | "intelligence.detector.disable"
+  | "intelligence.detector.configure"
 
 // Every privileged action in one table.
 //
@@ -58,6 +61,94 @@ function defineAction<S extends z.ZodTypeAny>(def: ActionDef<S>): ActionDef<S> {
 const connectorParams = z.object({ connectionId: z.uuid() })
 
 export const ACTIONS = {
+  "intelligence.connector.configure-github": defineAction({
+    impact: "medium",
+    schema: z
+      .object({
+        connectionId: z.uuid(),
+        label: z.string().trim().min(1).max(80),
+        repos: z
+          .string()
+          .trim()
+          .min(1)
+          .max(4000)
+          .refine((value) => {
+            const repos = value.split(/[\s,]+/).filter(Boolean)
+            return (
+              repos.length > 0 &&
+              repos.length <= 20 &&
+              repos.every(
+                (repo) =>
+                  /^[\w.-]+\/[\w.-]+$/.test(repo) &&
+                  repo.split("/").every((part) => part !== "." && part !== ".."),
+              )
+            )
+          }, "Use 1–20 repositories in owner/name format"),
+        deployWorkflows: z.string().trim().max(2000),
+        pathMap: z.enum(["generic", "intyga-core"]),
+      })
+      .strict(),
+    summary: (p) =>
+      `Configure GitHub source ${p.connectionId} (${p.label}): repositories ${p.repos}; deploy workflows ${p.deployWorkflows || "none"}; sensitive-path map ${p.pathMap}. Keep its existing token and history.`,
+    run: async (tenantId, p) => {
+      await prisma.$transaction(async (tx) => {
+        const connection = await tx.connection.findFirst({
+          where: { id: p.connectionId, tenantId, kind: "github", builtIn: false },
+          select: { config: true },
+        })
+        if (!connection) throw new Error("GitHub connector not found in this tenant")
+        await tx.connection.updateMany({
+          where: { id: p.connectionId, tenantId, kind: "github", builtIn: false },
+          data: {
+            label: p.label,
+            config: {
+              ...(connection.config as Record<string, string>),
+              repos: p.repos,
+              deployWorkflows: p.deployWorkflows,
+              pathMap: p.pathMap,
+            },
+          },
+        })
+      })
+    },
+  }),
+  "intelligence.detector.configure": defineAction({
+    impact: "high",
+    schema: CONFIGURE_DETECTOR,
+    summary: (p) =>
+      `Configure ${p.detector} with these monitoring expectations: ${JSON.stringify(p.settings)}. This changes when findings are raised; it does not enable external alert delivery.`,
+    run: async (tenantId, p) => {
+      if ("targets" in p.settings) {
+        const ids = [...new Set(p.settings.targets.map((t) => t.connectionId))]
+        const sources = await prisma.connection.findMany({
+          where: { tenantId, id: { in: ids } },
+          select: { id: true, kind: true, config: true },
+        })
+        if (sources.length !== ids.length)
+          throw new Error("A configured source does not belong to this workspace")
+        for (const target of p.settings.targets) {
+          const source = sources.find((s) => s.id === target.connectionId)
+          if (!source) throw new Error("Configured source is unavailable")
+          if (p.detector === "merge-policy" && source.kind !== "github")
+            throw new Error("Merge-policy monitoring requires a GitHub connector")
+          if (["job-overdue", "service-degradation"].includes(p.detector) && source.kind !== "webhook")
+            throw new Error("This detector requires a custom webhook source")
+          if (p.detector === "ci-health" && !["github", "webhook"].includes(source.kind))
+            throw new Error("CI monitoring requires GitHub or a custom webhook")
+          if (source.kind === "github" && "repo" in target) {
+            const repos = String((source.config as Record<string, unknown>)?.repos ?? "").split(/[\s,]+/)
+            if (!repos.includes(target.repo))
+              throw new Error("The repository is not configured on this source")
+          }
+        }
+      }
+      await prisma.detectorConfig.upsert({
+        where: { tenantId_detector: { tenantId, detector: p.detector } },
+        create: { tenantId, detector: p.detector, enabled: true, settings: p.settings },
+        update: { settings: p.settings },
+      })
+    },
+  }),
   "intelligence.service.create": defineAction({
     impact: "low",
     schema: z.object({

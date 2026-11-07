@@ -1,0 +1,200 @@
+#approve {
+  width: min(610px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  border: 1px solid var(--border-interactive);
+  border-radius: 18px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 28px 100px #000a;
+  overflow: auto;
+}
+#approve[open] {
+  display: flex;
+  flex-direction: column;
+}
+#approve .head,
+#approve .foot {
+  flex-shrink: 0;
+}
+#approve .body {
+  min-height: 0;
+  overflow: auto;
+}
+#approve::backdrop {
+  background: #050508bb;
+  backdrop-filter: blur(5px);
+}
+#approve .head {
+  padding: 24px 26px 18px;
+  border-bottom: 1px solid var(--border);
+}
+#approve .head h3 {
+  margin: 10px 0 0;
+  font-size: 23px;
+  letter-spacing: -0.03em;
+}
+.approvalBrand {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.19em;
+  color: var(--brand);
+}
+#approve .body {
+  padding: 22px 26px;
+}
+.approvalIntro {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 18px;
+}
+.approvalSteps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 0;
+  margin: 0 0 20px;
+  list-style: none;
+}
+.approvalSteps li {
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 3px solid var(--border-interactive);
+  padding-top: 8px;
+}
+.approvalSteps li[data-active="true"] {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+.approvalSteps li[data-done="true"] {
+  color: var(--green);
+  border-color: var(--green);
+}
+.approvalState {
+  border: 1px solid var(--amber);
+  border-radius: 12px;
+  padding: 17px 18px;
+  background: color-mix(in srgb, var(--amber) 7%, var(--panel));
+  margin: 0 0 18px;
+}
+.approvalState[data-state="applied"] {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 7%, var(--panel));
+}
+.approvalState[data-state="error"],
+.approvalState[data-state="refused"] {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 7%, var(--panel));
+}
+#approve-state-label {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--amber);
+}
+.approvalState[data-state="applied"] #approve-state-label {
+  color: var(--green);
+}
+.approvalState[data-state="error"] #approve-state-label,
+.approvalState[data-state="refused"] #approve-state-label {
+  color: var(--red);
+}
+#approve-status {
+  margin: 7px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.approvalReview {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 15px;
+}
+.approvalReview > span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+#approve-summary {
+  font-size: 14px;
+  line-height: 1.65;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+#approve-error {
+  color: var(--red);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+#approve-error:empty {
+  display: none;
+}
+#approve-expiry {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+#approve-share {
+  font-size: 13px;
+  margin-top: 16px;
+}
+#approve-share-url {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+}
+#approve .foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 18px 26px;
+  border-top: 1px solid var(--border);
+}
+#approve .foot .primary {
+  font-weight: 650;
+  padding: 11px 16px;
+}
+#approval-status:not(:empty),
+#embedded-status:not(:empty),
+#request-status:not(:empty),
+#link-status:not(:empty) {
+  padding: 15px 17px;
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--amber) 7%, var(--panel));
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+:is(#approval-status, #embedded-status, #request-status, #link-status)[data-sign-state="error"]:not(:empty) {
+  border-color: var(--red);
+}
+:is(#approval-status, #embedded-status, #request-status, #link-status)[data-sign-state="success"]:not(
+  :empty
+) {
+  border-color: var(--green);
+}
+@media (max-width: 480px) {
+  #approve .head,
+  #approve .body,
+  #approve .foot {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  #approve .foot .primary {
+    width: 100%;
+    text-align: center;
+  }
+  .approvalSteps {
+    gap: 6px;
+    font-size: 11px;
+  }
+}

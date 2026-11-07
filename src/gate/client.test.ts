@@ -65,6 +65,53 @@ test("a valid receipt is checked then consumed against the frozen action", async
   assert.deepEqual(gateway.state.consumeCalls, [{ nonce: gateway.state.nonce, ...action }])
 })
 
+test("embedded requests use application routing and return no console approval link", async () => {
+  const result = await openApproval(
+    { ...gateway.config, embeddedApplicationId: "application-test" },
+    {
+      ...action,
+      description: "Create API",
+      timeoutSeconds: 60,
+    },
+  )
+  assert.equal(result.nonce, gateway.state.nonce)
+  assert.equal(result.approveUrl, undefined)
+  assert.ok(gateway.state.requests.includes("/embedded/applications/application-test/authorize"))
+  assert.ok(!gateway.state.requests.includes("/authorize"))
+  assert.deepEqual(gateway.state.authorizeCalls, [
+    { ...action, actionDescription: "Create API", timeout: 60 },
+  ])
+})
+
+test("an old or refusing gateway never falls back to hosted approval", async (t) => {
+  for (const status of [404, 403, 500]) {
+    const urls: string[] = []
+    const mock = t.mock.method(globalThis, "fetch", async (url: string) => {
+      urls.push(url)
+      return url.endsWith("/oauth/token")
+        ? Response.json({ access_token: "test-token" })
+        : Response.json({ error: "upstream-private-detail" }, { status })
+    })
+    try {
+      await assert.rejects(
+        openApproval(
+          { ...gateway.config, embeddedApplicationId: "application-test" },
+          {
+            ...action,
+            description: "Create API",
+            timeoutSeconds: 60,
+          },
+        ),
+        status === 404 ? /routing update/ : GateRefused,
+      )
+      assert.equal(urls.length, 2)
+      assert.ok(urls[1]?.endsWith("/embedded/applications/application-test/authorize"))
+    } finally {
+      mock.mock.restore()
+    }
+  }
+})
+
 test("bad signatures, wrong nonces, changed parameters and untrusted signers never reach redemption", async () => {
   const receipt = signedReceipt(gateway.state.nonce, action)
   for (const bad of [

@@ -1,0 +1,194 @@
+:root {
+  --bg: #0d0f12;
+  --fg: #e8eaed;
+  --mut: #8b929c;
+  --line: #222730;
+  --card: #14171c;
+  --crit: #ff5c5c;
+  --high: #ff9f43;
+  --med: #f7d154;
+  --low: #6bcf8e;
+  --info: #6aa8ff;
+  --model: #b68cff;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fbfbfc;
+    --fg: #14171c;
+    --mut: #5f6673;
+    --line: #e3e6ea;
+    --card: #fff;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    15px / 1.5 ui-sans-serif,
+    -apple-system,
+    system-ui,
+    sans-serif;
+}
+.wrap {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 16px 80px;
+}
+h1 {
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mut);
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.lede {
+  color: var(--mut);
+  margin: 0 0 28px;
+  font-size: 14px;
+}
+.f {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin: 0 0 14px;
+}
+.f.critical {
+  border-left-color: var(--crit);
+}
+.f.high {
+  border-left-color: var(--high);
+}
+.f.medium {
+  border-left-color: var(--med);
+}
+.f.low {
+  border-left-color: var(--low);
+}
+.f.info {
+  border-left-color: var(--info);
+}
+header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.sev {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+.critical .sev {
+  color: var(--crit);
+}
+.high .sev {
+  color: var(--high);
+}
+.medium .sev {
+  color: var(--med);
+}
+.low .sev {
+  color: var(--low);
+}
+.info .sev {
+  color: var(--info);
+}
+.cat,
+.count,
+.when,
+.status {
+  color: var(--mut);
+}
+.status {
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.s-resolved,
+.s-dismissed {
+  opacity: 0.55;
+}
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  line-height: 1.35;
+}
+.sum {
+  color: var(--mut);
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.evs {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: rgba(127, 127, 127, 0.06);
+  border-radius: 6px;
+  font-size: 13px;
+  display: grid;
+  gap: 5px;
+}
+.ev .k {
+  display: inline-block;
+  min-width: 82px;
+  color: var(--mut);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+/* Model output is visually apart from measured fact. A reader must never have to guess. */
+.ev.model {
+  color: var(--model);
+}
+.ev .k.model {
+  color: var(--model);
+  font-weight: 700;
+}
+.mut {
+  color: var(--mut);
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+footer {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--mut);
+  border-radius: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+button:hover {
+  color: var(--fg);
+  border-color: var(--mut);
+}
+button[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--mut);
+}

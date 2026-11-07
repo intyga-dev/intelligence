@@ -10,6 +10,29 @@ const CORE = { map: PATH_MAPS["intyga-core"] }
 const fixture = (name: string): string[] =>
   JSON.parse(readFileSync(new URL(`../../test/fixtures/${name}`, import.meta.url), "utf8"))
 
+test("content, styling and cross-language tests do not inflate sensitive-path observations", () => {
+  const paths = [
+    "apps/marketing/app/blog/authors.ts",
+    "src/authors.ts",
+    "apps/marketing/app/blog/articles/the-repository-cannot-enforce-its-own-deployment-policy.ts",
+    "apps/web/app/login/page.module.css",
+    "packages/sdk-python/tests/test_guard.py",
+    "packages/verify-rust/src/webauthn_witness_test.rs",
+    "audit/intyga/repro/gateway/s6-webauthn-assertions.test.mts",
+  ]
+  const result = classifyChangedPaths(paths)
+  assert.deepEqual(result.hits, [])
+  assert.equal(result.excluded.length, paths.length)
+  const real = classifyChangedPaths([
+    "src/authentication.ts",
+    "src/authorization.ts",
+    "apps/blog/auth/session.ts",
+    "src/approval-policy.ts",
+  ])
+  assert.ok(real.hits.some((h) => h.component.id === "authentication"))
+  assert.ok(real.hits.some((h) => h.component.id === "authorization"))
+})
+
 test("matchesGlob: ** spans separators, * does not", () => {
   assert.equal(matchesGlob("packages/verify/src/index.ts", "packages/verify/src/**"), true)
   assert.equal(matchesGlob("packages/verify/src/a/b.ts", "packages/verify/src/**"), true)

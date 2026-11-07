@@ -12,6 +12,13 @@ export type Severity = "info" | "low" | "medium" | "high" | "critical"
 
 export type FindingStatus = "new" | "investigating" | "resolved" | "dismissed"
 
+export type FindingKind = "finding" | "observation"
+
+/** Path sensitivity alone is review context, not evidence of an incident or anomaly. */
+export function findingKind(dedupeKey: string): FindingKind {
+  return dedupeKey.startsWith("sensitive:") ? "observation" : "finding"
+}
+
 /** Half-open observation window: `from` included, `to` excluded. */
 export interface Window {
   from: Date
@@ -85,6 +92,8 @@ export interface AssessmentEvidence {
   answer: number | string
   probability?: number
   confidence?: number
+  /** Which answer the confidence describes; never attach severity confidence to anomaly likelihood. */
+  confidenceFor?: string
   /** sha256 of the exact request state, so "what did it see" is answerable after the fact. */
   stateDigest: string
 }
@@ -97,6 +106,13 @@ export type DeterministicEvidence =
   | CorrelationEvidence
 
 export type Evidence = DeterministicEvidence | AssessmentEvidence
+
+export function assessmentConfidenceLabel(e: AssessmentEvidence): string {
+  if (e.confidence === undefined) return ""
+  // Older TypeSafe records stored severity.confidence beside the anomalous answer.
+  const subject = e.confidenceFor ?? (e.provider === "typesafe" ? "severity" : e.question)
+  return `${subject} confidence ${(e.confidence * 100).toFixed(0)}%`
+}
 
 /**
  * A non-empty evidence list whose FIRST element cannot be an assessment.

@@ -7,11 +7,14 @@ import type { NormalizedEvent } from "../types.ts"
 //
 // It exists so that a CI system, an error tracker or an in-house service we do not ship a connector
 // for can still feed the detectors. The body is a small documented shape (docs/CONNECTORS.md), and
-// three kinds carry meaning to a detector today:
+// these kinds carry meaning to detectors:
 //
 //   · deployment  — anchors deploy-regression (attrs: production, succeeded, sha, name)
 //   · error       — counts as an error signal after a deploy
 //   · crash       — counts as a crash signal after a deploy
+//   · ci_run      — monitored branch workflow outcomes
+//   · job.completed — successful periodic work
+//   · slo.sample  — one-minute request and failure aggregates
 //
 // Any other kind is stored and shown, and waits for a detector that reads it.
 //
@@ -80,6 +83,7 @@ export const webhookConnector: PushConnector = {
     "POST one JSON event per request: { id, kind, at?, subject?, correlation?, attrs? }.",
     'Sign each request: x-intelligence-signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">.',
     "Kinds deployment, error and crash feed the deploy-regression detector; see docs/CONNECTORS.md.",
+    "Kinds job.completed, slo.sample and ci_run feed configured operational detectors. Add targets on the Detectors page; payload examples are in docs/CONNECTORS.md.",
     "Turn the connector on. Deliveries to a switched-off connector are verified and then ignored.",
   ],
 

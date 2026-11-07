@@ -103,6 +103,10 @@ export async function stubGateway() {
     state.authorizeCalls.push(req.body as Action)
     return { nonce: state.nonce }
   })
+  app.post("/embedded/applications/:applicationId/authorize", async (req) => {
+    state.authorizeCalls.push(req.body as Action)
+    return { status: "PENDING", nonce: state.nonce }
+  })
   app.get("/authorize/:nonce", async (_req, reply) =>
     reply.code(state.statusCode).send({ status: state.status, receipt: state.receipt }),
   )

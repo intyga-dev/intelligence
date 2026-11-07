@@ -4,6 +4,7 @@ export interface ConnectorHealthInput {
   mode: "push" | "poll"
   activatedAt: Date | null
   lastEventAt: Date | null
+  lastVerifiedDeliveryAt?: Date | null
   lastPolledAt: Date | null
   lastPollSuccessAt: Date | null
   lastPollError: string | null
@@ -55,11 +56,18 @@ export function connectorHealth(
     }
   }
   if (!c.lastEventAt || (c.activatedAt && c.lastEventAt < c.activatedAt)) {
+    if (c.lastVerifiedDeliveryAt && (!c.activatedAt || c.lastVerifiedDeliveryAt >= c.activatedAt))
+      return {
+        label: "Delivery verified",
+        tone: "on",
+        detail:
+          "An authenticated delivery arrived, but it contained no supported event. Send a real provider alert to verify detector coverage.",
+      }
     return {
       label: "Awaiting delivery",
       tone: "off",
       detail:
-        "Send a test event from your provider. Check the webhook URL and signing secret if it does not arrive.",
+        "Send a test event from your provider. Check the webhook URL and authentication secret if it does not arrive.",
     }
   }
   return {

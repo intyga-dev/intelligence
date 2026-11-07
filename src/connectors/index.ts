@@ -18,6 +18,18 @@ import { registerConnector } from "./registry.ts"
 import { sentryConnector } from "./sentry/index.ts"
 import { vercelConnector } from "./vercel/index.ts"
 import { webhookConnector } from "./webhook/index.ts"
+import {
+  awsEventBridgeConnector,
+  googleMonitoringConnector,
+  grafanaConnector,
+  alertmanagerConnector,
+  stripeConnector,
+} from "./providerAlerts/push.ts"
+import {
+  googleWorkspaceConnector,
+  azureMonitorConnector,
+  betterStackConnector,
+} from "./providerAlerts/poll.ts"
 
 registerConnector(intygaConnector)
 registerConnector(githubConnector)
@@ -32,5 +44,16 @@ registerConnector(opsgenieConnector)
 registerConnector(datadogConnector)
 registerConnector(cloudflareConnector)
 registerConnector(netlifyConnector)
+for (const connector of [
+  awsEventBridgeConnector,
+  googleMonitoringConnector,
+  grafanaConnector,
+  alertmanagerConnector,
+  stripeConnector,
+  googleWorkspaceConnector,
+  azureMonitorConnector,
+  betterStackConnector,
+])
+  registerConnector(connector)
 
 export { allConnectors, connectorFor, isPoll, isPush } from "./registry.ts"

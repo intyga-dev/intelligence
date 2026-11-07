@@ -132,29 +132,6 @@ export function histogram(buckets: { label: string; count: number }[]): string {
 }
 
 /** Styles and the hover behaviour, injected once per page. */
-export const CHART_CSS = `
-.chart{margin:0;position:relative}
-.chart svg{width:100%;height:132px;display:block;overflow:visible}
-.chart figcaption{font-size:11px;margin-top:6px}
-.chart .tip{position:absolute;pointer-events:none;background:var(--panel-2);border:1px solid var(--border-interactive);
-  border-radius:7px;padding:5px 9px;font-size:12px;white-space:nowrap;transform:translate(-50%,-140%);z-index:5}
-.chart .hot rect{cursor:crosshair}
-
-/* 4px rounded data-end, anchored to the baseline; 2px gap between adjacent fills. */
-.bars{display:grid;gap:7px}
-.bar{display:grid;grid-template-columns:minmax(90px,168px) 1fr auto;gap:10px;align-items:center;font-size:12px}
-.bl{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
-.bt{background:var(--panel-2);border-radius:4px;height:16px;overflow:hidden}
-.bf{display:block;height:100%;background:var(--brand);border-radius:0 4px 4px 0;min-width:2px}
-.bv{font-variant-numeric:tabular-nums;font-weight:600;font-size:12px}
-
-.hist{display:flex;gap:2px;align-items:flex-end;height:128px}
-.hb{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%}
-.hv{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;height:13px}
-.hc{flex:1;width:100%;display:flex;align-items:flex-end;background:var(--panel-2);border-radius:4px;overflow:hidden}
-.hf{width:100%;background:var(--brand);border-radius:4px 4px 0 0}
-.hl{font-size:10px;color:var(--muted);white-space:nowrap}
-`
 
 export const CHART_JS = `
 // Crosshair + readout. One delegated listener per chart; no per-point DOM churn.

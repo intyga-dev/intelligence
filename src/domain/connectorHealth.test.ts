@@ -47,3 +47,16 @@ test("normalization failures and unsupported connectors are visible", () => {
   assert.equal(connectorHealth({ ...base, mode: "push", failedDeliveries: 2 }, now).label, "Delivery errors")
   assert.equal(connectorHealth({ ...base, supported: false }, now).label, "Unavailable")
 })
+
+test("provider test deliveries confirm authentication without claiming detector coverage", () => {
+  const health = connectorHealth({ ...base, mode: "push", lastVerifiedDeliveryAt: now }, now)
+  assert.equal(health.label, "Delivery verified")
+  assert.match(health.detail, /no supported event/)
+  assert.equal(
+    connectorHealth(
+      { ...base, mode: "push", lastVerifiedDeliveryAt: new Date("2026-01-01"), activatedAt: now },
+      now,
+    ).label,
+    "Awaiting delivery",
+  )
+})

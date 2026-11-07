@@ -1,3 +1,4 @@
+import { stylesheetLinks } from "./styles.ts"
 import type { ServiceDetail, ServiceSummary } from "../store/services.ts"
 import { findingUrl } from "../domain/findingQuery.ts"
 import { ago, esc, num, page, type NavCounts } from "./layout.ts"
@@ -15,12 +16,7 @@ export function servicesPage(o: {
     ...(o.actor ? { actor: o.actor } : {}),
     lede: "Follow the systems your team runs. Each service brings its sources, changes and findings together.",
     body: `
-<style>
-.serviceCreate{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
-.serviceCreate .field{margin:0;min-width:0}
-.serviceCreate .actions{grid-column:1/-1}
-@media(max-width:640px){.serviceCreate{grid-template-columns:1fr}}
-</style>
+${stylesheetLinks("services")}
 <div class="card"><h2>Your first service</h2>
 <p class="mut">Create a service such as “Production API”, assign its deployment and signal sources below, then turn those sources on in <a href="/connectors">Connectors</a>. Use separate connections for unrelated services or environments.</p>
 <form id="create-service" class="serviceCreate">

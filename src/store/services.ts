@@ -1,5 +1,5 @@
 import { prisma } from "./client.ts"
-import { listFindings } from "./repo.ts"
+import { countFindings, listFindings } from "./repo.ts"
 
 export async function listServices(tenantId: string) {
   const rows = await prisma.service.findMany({
@@ -10,9 +10,7 @@ export async function listServices(tenantId: string) {
   return Promise.all(
     rows.map(async (service) => {
       const [open, lastEvent] = await Promise.all([
-        prisma.finding.count({
-          where: { tenantId, serviceId: service.id, status: { in: ["new", "investigating"] } },
-        }),
+        countFindings(tenantId, { kind: "finding", serviceId: service.id, status: ["new", "investigating"] }),
         prisma.event.findFirst({
           where: { tenantId, serviceId: service.id },
           orderBy: { at: "desc" },
@@ -32,7 +30,7 @@ export async function serviceDetail(tenantId: string, id: string, now = new Date
   if (!service) return null
   const since = new Date(now.getTime() - 7 * 86400_000)
   const [findings, events, totalEvents] = await Promise.all([
-    listFindings(tenantId, { serviceId: id, status: ["new", "investigating"], limit: 20 }),
+    listFindings(tenantId, { kind: "finding", serviceId: id, status: ["new", "investigating"], limit: 20 }),
     prisma.event.findMany({
       where: { tenantId, serviceId: id, at: { gte: since, lte: now } },
       orderBy: [{ at: "desc" }, { id: "asc" }],

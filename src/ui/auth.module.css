@@ -1,0 +1,141 @@
+body.auth {
+  min-height: 100vh;
+}
+/* Explicit resets rather than relying on the admin main rule not applying: this element is a
+   <main>, and a future change to that selector must not silently un-centre sign-in. */
+.authWrap {
+  min-height: 100vh;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 40px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.authCol {
+  width: 100%;
+  max-width: 394px;
+}
+.authCol.wide {
+  max-width: 660px;
+}
+
+/* The mark sits above the card rather than inside it: it identifies the page without competing
+   with the one thing there is to do. Same wordmark spec as the console sidebar. */
+.authBrand {
+  text-align: center;
+  margin: 0 0 24px;
+}
+.authBrand .wordmark {
+  display: block;
+  font-weight: 800;
+  font-size: 21px;
+  letter-spacing: 0.2em;
+  margin-right: -0.2em;
+  line-height: 1;
+  white-space: nowrap;
+}
+.authBrand small {
+  display: block;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 10.5px;
+  margin-top: 6px;
+}
+
+.authCard {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 26px 26px 24px;
+  /* A hairline of brand at the top edge — enough to be ownable, not enough to shout. */
+  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--brand-mark) 45%, transparent);
+}
+.authCard h1 {
+  font-size: 19px;
+  font-weight: 650;
+  margin: 0 0 6px;
+  letter-spacing: -0.015em;
+}
+.authLede {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+.authCard .field {
+  margin: 0 0 16px;
+}
+.authCard .field:last-of-type {
+  margin-bottom: 18px;
+}
+.authCard input,
+.authCard textarea {
+  font-size: 14px;
+  padding: 9px 11px;
+}
+.authCard button {
+  width: 100%;
+  min-height: 38px;
+  font-size: 13px;
+}
+.authCard .row {
+  gap: 10px;
+}
+
+.authError {
+  background: color-mix(in srgb, var(--red) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 38%, transparent);
+  color: var(--red);
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  margin: 0 0 18px;
+  line-height: 1.45;
+}
+
+.authMsg {
+  display: block;
+  min-height: 17px;
+  margin-top: 11px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.authFoot {
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+  margin: 18px 0 0;
+  line-height: 1.5;
+}
+.authFoot a {
+  color: var(--link);
+}
+
+/* Signup is a real form, so it gets section rules the single-field screens do not need. */
+.authSection {
+  border-top: 1px solid var(--border);
+  margin: 22px 0 0;
+  padding: 20px 0 0;
+}
+.authSection:first-of-type {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+.authSection h2 {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+.authSection p {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 14px;
+  line-height: 1.5;
+}

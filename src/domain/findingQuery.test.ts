@@ -7,11 +7,14 @@ test("query defaults keep the console focused on open findings", () => {
   assert.deepEqual(findingOptions(query).status, ["new", "investigating"])
   assert.equal(query.limit, 25)
   assert.equal(query.sort, "priority")
+  assert.equal(findingOptions(query).kind, "finding")
+  assert.equal(findingOptions(FINDING_QUERY.parse({ kind: "observation" })).kind, "observation")
 })
 
 test("invalid filters and unbounded or fractional pagination are rejected", () => {
   for (const query of [
     { status: "unknown" },
+    { kind: "anomaly" },
     { status: "new,unknown" },
     { severity: "urgent" },
     { limit: "-1" },
@@ -43,4 +46,5 @@ test("page links keep every filter and encode user text", () => {
   assert.equal(url.searchParams.get("status"), "new,investigating")
   assert.equal(url.searchParams.get("page"), "3")
   assert.match(findingUrl("id"), /status=all&q=id#id/)
+  assert.match(findingUrl("id"), /kind=all/)
 })

@@ -1,5 +1,12 @@
 import type { NormalizedEvent } from "../connectors/types.ts"
-import type { Category, Evidence, Finding, Severity } from "../domain/finding.ts"
+import {
+  findingKind,
+  type Category,
+  type Evidence,
+  type Finding,
+  type FindingKind,
+  type Severity,
+} from "../domain/finding.ts"
 import type { Prisma } from "../generated/prisma/client.ts"
 import { prisma } from "./client.ts"
 
@@ -171,12 +178,18 @@ export async function upsertFinding(f: Finding): Promise<{ id: string; isNew: bo
     // Severity ratchets up but never down: a condition that was once critical does not become
     // medium because the most recent window was quieter. A human closes it, not a quiet tick.
     const rank: Record<Severity, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 }
-    const severity = rank[f.severity] > rank[existing.severity] ? f.severity : existing.severity
+    const severity =
+      findingKind(f.dedupeKey) === "observation"
+        ? "info"
+        : rank[f.severity] > rank[existing.severity]
+          ? f.severity
+          : existing.severity
 
     await tx.finding.update({
       where: { id: existing.id },
       data: {
         severity,
+        category: f.category,
         ...(f.serviceId !== undefined ? { serviceId: f.serviceId } : {}),
         title: f.title,
         summary: f.summary ?? null,
@@ -192,6 +205,7 @@ export async function upsertFinding(f: Finding): Promise<{ id: string; isNew: bo
 }
 
 export interface FindingListItem {
+  kind?: FindingKind
   serviceId: string | null
   id: string
   category: string
@@ -203,10 +217,11 @@ export interface FindingListItem {
   count: number
   status: string
   evidence: Evidence[]
-  feedback: { verdict: string; actor: string; note: string | null; createdAt: Date }[]
+  feedback: { verdict: string; actor: string; actorLabel?: string; note: string | null; createdAt: Date }[]
 }
 
 interface FindingOptions {
+  kind?: FindingKind | "all"
   serviceId?: string
   status?: string[]
   severity?: Severity
@@ -221,6 +236,11 @@ function findingsWhere(tenantId: string, opts: FindingOptions): Prisma.FindingWh
   const query = opts.query?.trim()
   return {
     tenantId,
+    ...(opts.kind === "observation"
+      ? { dedupeKey: { startsWith: "sensitive:" } }
+      : opts.kind === "finding"
+        ? { NOT: { dedupeKey: { startsWith: "sensitive:" } } }
+        : {}),
     ...(opts.serviceId ? { serviceId: opts.serviceId } : {}),
     ...(opts.status?.length ? { status: { in: opts.status as never[] } } : {}),
     ...(opts.severity ? { severity: opts.severity } : {}),
@@ -262,7 +282,16 @@ export async function listFindings(tenantId: string, opts: FindingOptions = {}):
     skip: opts.offset ?? 0,
   })
 
+  const actorIds = [...new Set(rows.flatMap((r) => r.feedback.map((f) => f.actor)))]
+  const members = actorIds.length
+    ? await prisma.member.findMany({
+        where: { tenantId, externalId: { in: actorIds } },
+        select: { externalId: true, label: true },
+      })
+    : []
+  const actorLabels = new Map(members.map((m) => [m.externalId, m.label]))
   return rows.map((r) => ({
+    kind: findingKind(r.dedupeKey),
     id: r.id,
     serviceId: r.serviceId,
     category: r.category,
@@ -273,10 +302,13 @@ export async function listFindings(tenantId: string, opts: FindingOptions = {}):
     lastSeenAt: r.lastSeenAt,
     count: r.count,
     status: r.status,
-    evidence: r.evidence.map((e) => e.data as unknown as Evidence),
+    evidence: r.evidence
+      .filter((e) => findingKind(r.dedupeKey) !== "observation" || e.kind !== "assessment")
+      .map((e) => e.data as unknown as Evidence),
     feedback: r.feedback.map((f) => ({
       verdict: f.verdict,
       actor: f.actor,
+      actorLabel: actorLabels.get(f.actor) ?? f.actor,
       note: f.note,
       createdAt: f.createdAt,
     })),

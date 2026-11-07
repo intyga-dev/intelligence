@@ -135,6 +135,12 @@ cannot sign in to the INTYGA console. Revoking an application, its passkey, or m
 embedded approvals, including approvals awaiting redemption. Shared approval links let other
 eligible members contribute to quorum using their own application passkeys.
 
+Embedded requests use INTYGA's application-specific authorization endpoint. Approve inside
+Intelligence, or share its application approval link with another eligible member. INTYGA does not
+send console approval notifications for these requests; quorum, audit records and receipt checks
+still apply. The gateway must support application approval routing; Intelligence refuses to fall
+back to a console ceremony when that endpoint is unavailable.
+
 Without embedded configuration, normal approval sign-in opens INTYGA and explicitly grants its
 initiating browser ADMIN access for 12 hours. Optional OIDC uses a registered `/auth/callback` URI
 and `INTYGA_OIDC_CLIENT_ID`; its verified identity claims determine the role. Use the console-origin
@@ -175,14 +181,16 @@ Python, a GitHub Actions snippet, and the rules a connector has to follow.
 
 ## Deterministic detectors
 
-Four detectors ship. Each is a pure function over stored events, runs on every detection tick, and
+Ten detectors ship. Each is a pure function over stored events, runs on every detection tick, and
 can be switched off on `/detectors`. Switching one off is a passkey-signed action. The severity and
 the reason a finding exists are always computed; the optional model can only adjust them afterwards.
 
 - **`denial-burst`** — a subject refused far more than it usually is, judged against its own
   history, plus any action type it has never attempted before. _Needs:_ the INTYGA connector.
   ([source](src/domain/detectors/denialBurst.ts))
-- **`sensitive-code-change`** — a pull request touching security-sensitive code. Each GitHub
+- **`sensitive-code-change`** — informational review observations for pull requests touching sensitive paths.
+  They appear under **Findings → Observations**, do not trigger alerts, and are not sent for model anomaly scoring.
+  A merge or path match alone does not establish unusual behavior. Each GitHub
   connector picks a **path map**:
   - `generic` (the default) matches conventional names in any repository: auth, sessions,
     permissions, crypto, secrets, migrations, infrastructure, CI. It is a heuristic and says so.
@@ -190,7 +198,7 @@ the reason a finding exists are always computed; the optional model can only adj
     must change together across six language ports is flagged when a PR updates only some of them.
     That rule is never applied to a truncated file list.
 
-  Drafts and noise (lockfiles, docs, tests) are skipped. Each PR has one finding, updated on each
+  Drafts and noise (lockfiles, docs, blog articles, styles, tests) are skipped. Each PR has one observation, updated on each
   push. Works the same on GitLab merge requests. _Needs:_ the GitHub or GitLab connector. ([source](src/domain/detectors/sensitiveChange.ts))
 - **`deploy-regression`** — errors (Sentry), machine crashes (Fly), incidents (PagerDuty,
   Opsgenie, Datadog; one is enough) or the approval refusal rate (INTYGA) rising in the 30 minutes
@@ -220,6 +228,49 @@ Noise guards are part of each detector, not tuning left to you:
 
 Enter custom PromQL expressions one per line. Comma-separated bare metric names remain supported;
 commas inside selectors or functions are preserved.
+
+The operational detectors have editable settings on **Detectors → Configure operational detectors**.
+Settings changes use the same signed INTYGA action flow as switching a detector on/off.
+
+**`provider-alerts`** imports medium-or-higher native alerts from AWS EventBridge, Google Cloud
+Monitoring, Google Workspace Alert Center, Azure Monitor, Grafana, Prometheus Alertmanager, Stripe
+and Better Stack. These eight additions bring the catalogue to 21 connectors. Search the catalogue
+by provider or use its categories; every card explains its implemented detector coverage.
+Native alerts are labelled as provider-reported conditions, not independent anomaly assessments.
+Explicit provider recovery closes only the matching incident; silence and acknowledgement do not.
+See [setup recipes, coverage limits and the expansion plan](docs/CONNECTORS.md#native-provider-integrations).
+
+| Detector              | Condition                                                                                                     | Setup                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `collection-health`   | Three failed polls in a row, or a recorded gap over 15 minutes when polling resumes (defaults).               | Automatic for active polling connectors. Successful empty polls are healthy; push silence is not a failed poll.                              |
+| `ci-health`           | Three failed workflow runs or a failure at least 30 minutes old without a later collected success (defaults). | Select connector, repository, branch and exact workflow name. GitHub Actions or signed `ci_run` events.                                      |
+| `merge-policy`        | GitHub recorded an accepted bypass with a failed active review or required-check rule.                        | Select GitHub repositories/branches with rulesets; token needs **Administration: read** in addition to normal connector permissions.         |
+| `job-overdue`         | No successful completion within the configured interval plus grace.                                           | Select a custom webhook, job name, start time, interval and grace; emit `job.completed` after successful backups, syncs or scheduled checks. |
+| `service-degradation` | Both short and long windows exceed the configured error-budget burn threshold.                                | Select a custom webhook and objective; emit complete one-minute `slo.sample` aggregates for errors or slow requests.                         |
+
+All but collection health start with no targets. [Webhook examples and setup details](docs/CONNECTORS.md#operational-detector-events)
+cover non-Git systems. SLO defaults: 99.9% success, 5m/60m windows, 14.4× burn and at least 100 requests
+per window. Missing or conflicting minute aggregates mean unknown health and produce no degradation
+finding. Job and SLO targets support a maintenance end time. Job intervals restart after maintenance;
+SLO monitoring waits for a complete post-maintenance window.
+
+Changing operational settings or re-enabling a detector starts a fresh monitoring period; old events
+are not replayed. Job monitoring starts no earlier than its configured start, connector activation,
+or latest settings change. Repeated ticks over identical evidence do not reopen dismissed findings.
+Healthy data stops new detections; existing findings remain available for human resolution.
+These five detectors use deterministic evidence and do not request model anomaly scores.
+
+Collection health runs inside the scheduler: it cannot report a stopped scheduler until polling
+resumes. Use an external uptime/dead-man monitor for that. CI failures older than 24 hours or GitHub
+collection errors are treated as unknown. GitHub polling is bounded to 50 recent runs per repository;
+high-volume repositories that exceed a day's coverage report a collection error. Ruleset collection
+looks back one day, at most 500 evaluations per target and 40 bypass details per connector per tick;
+incomplete coverage reports a collection error and retains cursors for retry. Classic branch
+protection without ruleset evaluations is not covered. A recorded bypass can be an authorized
+exception: it is a review finding, not proof of misconduct.
+
+The merge detector uses [GitHub's historical rule-suite API](https://docs.github.com/en/rest/repos/rule-suites).
+The service detector follows the [multiwindow burn-rate approach](https://sre.google/workbook/alerting-on-slos/).
 
 Adding a detector: a pure function in `src/domain/detectors/`, an entry in
 `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. Failures are isolated per
@@ -316,6 +367,12 @@ Service or activate a connector and approve directly in Intelligence. If the rul
 one approver, share the application approval link with other enrolled workspace members.
 Intelligence verifies and redeems the completed approval before making the change.
 
+The approval dialog separates review, passkey entry, workspace approval and applied states. A
+successful signature alone never shows the change as applied. Action toasts report progress,
+failures and success; saved feedback and approved changes keep their success message across reloads.
+Styles live in `src/ui/*.module.css`, served through a fixed asset allowlist. This server-rendered
+app uses component selectors for scoping and does not require a frontend bundler.
+
 ---
 
 ## Adding connectors
@@ -323,7 +380,8 @@ Intelligence verifies and redeems the completed approval before making the chang
 1. Navigate to **Connectors** (`http://localhost:4100/connectors`).
 2. Under **Add a connector**, select an integration.
 3. Enter a label (e.g. `INTYGA Staging`, `GitHub Production`).
-4. Copy the unique **webhook ingestion URL** and one-time **signing secret** into your provider.
+4. Follow the integration's setup instructions: push connectors supply an ingestion URL and
+   authentication details; polling connectors use the credentials you entered.
 5. Click **Turn on** — this requires an administrator passkey tap, because it starts a data flow.
 
 The connector page distinguishes setup pending, awaiting a first poll or delivery, successful
@@ -332,6 +390,22 @@ summary and the time of the last successful poll. A successful empty poll is nor
 silence is not treated as an outage. Setup instructions remain available after activation.
 
 ## Investigating findings
+
+The default view shows findings backed by detector evidence beyond path sensitivity. **Observations**
+holds routine sensitive-code changes for review; **Everything** includes both. API clients can use
+`kind=finding`, `kind=observation`, or `kind=all` (the API default). Model confidence labels name the
+answer they describe: severity confidence is not confidence in an anomaly score.
+
+To update existing path-only findings after upgrading, preview and then apply the reclassification:
+
+```bash
+pnpm exec tsx scripts/reclassify-observations.ts <tenant-id>
+pnpm exec tsx scripts/reclassify-observations.ts <tenant-id> --apply
+```
+
+This preserves IDs, timestamps, counts, feedback and historical model request records. It updates
+the review context from stored events, sets informational severity, and removes unsupported model
+scores from observation cards. It does not poll providers, call a model, or deliver alerts.
 
 On **Findings**, combine status, severity and category filters with a search over titles, summaries
 or a finding ID. Choose highest priority or most recently seen. Priority is applied before
@@ -431,6 +505,15 @@ and turning it on requires an administrator passkey signature.
   not a refactor.
 - `/judgment` in the console shows the exact request body that would be sent, before you enable
   anything.
+- Questions use versioned guidance for code/delivery, identity/access, cloud operations,
+  monitoring/reliability, payments, and other sources. Mixed evidence receives all relevant guidance.
+  Routine merges are expected; a denial can mean a control worked; a dispute can need attention
+  without being anomalous. Missing context stays uncertain. Provider alert titles are excluded.
+  Status and metric-window duration are included; repeated observations are not independent incidents.
+  The exact prompt participates in the assessment cache digest and request audit record.
+- Operational and native-provider detectors remain deterministic and do not automatically invoke
+  Jev. Group guidance applies whenever a finding is projected for judgment or previewed. Prompt
+  tests verify routing and payload safety, not the quality or calibration of a live model's answers.
 
 ---
 

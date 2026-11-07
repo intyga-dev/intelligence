@@ -1,3 +1,4 @@
+import { QUESTION_SET } from "../redaction/guidance.ts"
 import crypto from "node:crypto"
 import { config } from "../config.ts"
 import { previewRequest, projectForJudgment } from "../redaction/project.ts"
@@ -35,9 +36,11 @@ export async function evaluateFindingWithJudgment(
   })
   if (!detectorCfg?.enabled) return { ok: false, error: "judgment disabled for tenant" }
 
-  const findings = await listFindings(tenantId, { limit: 100 })
+  const findings = await listFindings(tenantId, { query: findingId, limit: 1 })
   const finding = findings.find((f) => f.id === findingId)
   if (!finding) return { ok: false, error: "finding not found" }
+  if (finding.kind === "observation")
+    return { ok: false, error: "Review observations are not anomaly evidence" }
 
   const state = projectForJudgment(finding, config.secretsEncKey)
   const payload = JSON.parse(previewRequest(state, config.judgment.model))
@@ -96,6 +99,7 @@ export async function evaluateFindingWithJudgment(
       answer: data.answers.anomalous?.noul ?? 0,
       probability: data.answers.anomalous?.noul,
       confidence: data.answers.severity?.confidence,
+      confidenceFor: "severity",
       stateDigest,
     }
 
@@ -112,7 +116,7 @@ export async function evaluateFindingWithJudgment(
       data: {
         tenantId,
         findingId,
-        questionSet: "systemone-v0",
+        questionSet: QUESTION_SET,
         status: "DONE",
         attempts: 1,
         sentState: payload as object,

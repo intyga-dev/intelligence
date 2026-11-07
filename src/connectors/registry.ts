@@ -39,6 +39,10 @@ export interface ConnectorContext {
 export type VerifyOutcome = { ok: true } | { ok: false; reason: string }
 
 interface Base {
+  /** Catalogue guidance: capabilities describe implemented coverage, never planned features. */
+  category?: string
+  coverage?: string
+  docsUrl?: string
   kind: string
   label: string
   /** One line, shown on the connector catalogue. */
@@ -55,6 +59,9 @@ interface Base {
 }
 
 export interface PushConnector extends Base {
+  /** Some native webhooks deliver several independently changing alerts in one request. */
+  normalizeBatch?(input: { connectionId: string; body: unknown; receivedAt: Date }): NormalizedEvent[]
+  basicAuth?: boolean
   mode: "push"
   /**
    * Whether this connector MINTS its shared secret, or is given one.

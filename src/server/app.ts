@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises"
+import { STYLESHEETS } from "../ui/styles.ts"
 import { readApprovalTicket } from "../embedded/approval-link.ts"
 import { embeddedApprovalPage } from "../ui/auth.ts"
 import { embeddedRequest } from "../gate/embedded.ts"
@@ -36,11 +38,14 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { createLimiter } from "./ratelimit.ts"
 import { allConnectors, connectorFor, isPush } from "../connectors/index.ts"
 import { NormalizeError } from "../connectors/intyga/normalize.ts"
+import { catalogueDetails } from "../connectors/catalogue.ts"
 import { DEFAULT_BURST_CONFIG } from "../domain/detectors/denialBurst.ts"
 import { FINDING_QUERY, findingOptions } from "../domain/findingQuery.ts"
 import { listServices, serviceDetail } from "../store/services.ts"
 import { servicesPage, servicePage } from "../ui/services.ts"
 import { demoPage } from "../ui/demo.ts"
+import { profilePage } from "../ui/profile.ts"
+import { githubEditPage } from "../ui/connectorEdit.ts"
 import { DEFAULT_REGRESSION_CONFIG } from "../domain/detectors/deployRegression.ts"
 import { DETECTOR_INFO, DETECTORS, type DetectorId } from "../domain/detectors/index.ts"
 import { previewRequest, projectForJudgment } from "../redaction/project.ts"
@@ -97,6 +102,12 @@ const RETENTION_DAYS = 90
 
 /** The thresholds each detector runs with, as shown on /detectors. Read from the detectors' own defaults. */
 const DETECTOR_SETTINGS: Readonly<Record<DetectorId, string>> = {
+  "provider-alerts": "Provider severity ≥ medium; explicit recovery only; tune alert rules at the provider",
+  "collection-health": "Configurable failures and polling gaps; see settings below",
+  "ci-health": "Selected workflows; configurable failure count or age below",
+  "merge-policy": "Selected branches; accepted bypass of a failed active merge rule",
+  "job-overdue": "Selected jobs; configurable interval, grace and maintenance below",
+  "service-degradation": "Selected objectives; configurable burn rate across two windows below",
   "metrics-health": "counter increase ≥ 1; broken objects ≥ 1; sample gap ≤ 15m",
   "denial-burst": `floor ≥ ${DEFAULT_BURST_CONFIG.floor}, ratio ≥ ${DEFAULT_BURST_CONFIG.ratio}×, window ${
     DEFAULT_BURST_CONFIG.windowMs / 60_000
@@ -166,6 +177,15 @@ export function buildApp(): FastifyInstance {
     },
     bodyLimit: 1_000_000,
   })
+
+  for (const name of STYLESHEETS) {
+    app.get(`/assets/ui/${name}.module.css`, async (_req, reply) =>
+      reply
+        .type("text/css; charset=utf-8")
+        .header("Cache-Control", "no-cache")
+        .send(await readFile(new URL(`../ui/${name}.module.css`, import.meta.url), "utf8")),
+    )
+  }
 
   // The HMAC covers the RAW bytes, so the original string has to survive parsing. Re-serializing a
   // parsed object would verify only by luck.
@@ -243,6 +263,7 @@ export function buildApp(): FastifyInstance {
     const verified = def.verify({ headers: req.headers, rawBody: body.raw, secret })
     if (!verified.ok) {
       req.log.warn({ kind, connectionId, reason: verified.reason }, "webhook signature rejected")
+      if (def.basicAuth) reply.header("www-authenticate", 'Basic realm="Intelligence", charset="UTF-8"')
       return reply.code(401).send({ error: "unauthorized" })
     }
 
@@ -256,10 +277,14 @@ export function buildApp(): FastifyInstance {
     if (!raw.created) return { ok: true, duplicate: true }
 
     try {
-      const normalized = def.normalize({ connectionId, body: body.json, receivedAt: new Date() })
-      if (normalized) await saveEvent(connection.tenantId, normalized, connection.serviceId)
+      const input = { connectionId, body: body.json, receivedAt: new Date() }
+      const normalized = def.normalizeBatch
+        ? def.normalizeBatch(input)
+        : [def.normalize(input)].filter((e) => e !== null)
+      if (normalized.length > 200) throw new Error("delivery batch too large")
+      for (const event of normalized) await saveEvent(connection.tenantId, event, connection.serviceId)
       await markRawNormalized(raw.id)
-      return { ok: true, stored: normalized !== null }
+      return { ok: true, stored: normalized.length > 0 }
     } catch (err) {
       // The raw row is committed, so this is replayable. Answering 2xx is deliberate: a 5xx makes
       // the producer retry, back off and eventually DISABLE the endpoint — losing the feed over a
@@ -295,6 +320,7 @@ export function buildApp(): FastifyInstance {
   // route-by-route, because an allowlist is auditable in one place and a per-route flag is one
   // forgotten decorator away from an open admin console.
   const PUBLIC_EXACT = new Set([
+    ...STYLESHEETS.map((name) => `/assets/ui/${name}.module.css`),
     "/demo",
     "/.well-known/intyga-embedded",
     "/.well-known/intyga-intelligence",
@@ -455,7 +481,7 @@ export function buildApp(): FastifyInstance {
         },
         update: {
           active: true,
-          label: approved.member?.name ?? "Approved administrator",
+          // Keep the member's locally chosen display name across sign-ins.
           role: approved.member?.role ?? "ADMIN",
           lastLoginAt: new Date(),
         },
@@ -655,7 +681,7 @@ export function buildApp(): FastifyInstance {
           active: true,
           lastLoginAt: new Date(),
         },
-        update: { label: person.name, role: person.role, active: true, lastLoginAt: new Date() },
+        update: { role: person.role, active: true, lastLoginAt: new Date() },
         select: { id: true },
       })
       const token = await createSession({ tenantId: t.id, memberId: member.id })
@@ -711,7 +737,7 @@ export function buildApp(): FastifyInstance {
   }
   async function counts(tenantId: string) {
     const [findings, alerts, connectors] = await Promise.all([
-      prisma.finding.count({ where: { tenantId, status: { in: ["new", "investigating"] } } }),
+      countFindings(tenantId, { kind: "finding", status: ["new", "investigating"] }),
       prisma.alertRule.count({ where: { tenantId, active: true } }),
       prisma.connection.count({ where: { tenantId, active: true } }),
     ])
@@ -756,7 +782,7 @@ export function buildApp(): FastifyInstance {
       overview(t.id, since),
       eventSeries(t.id, since, "hour"),
       refusalSeries(t.id, since, "hour"),
-      listFindings(t.id, { status: ["new", "investigating"], limit: 10 }),
+      listFindings(t.id, { kind: "finding", status: ["new", "investigating"], limit: 10 }),
       counts(t.id),
     ])
     return html(
@@ -824,6 +850,47 @@ export function buildApp(): FastifyInstance {
     )
   })
 
+  app.get("/profile", async (req, reply) => {
+    const actor = actorOf(req)
+    if (!actor) return reply.code(401).send({ error: "not signed in" })
+    return html(reply, profilePage(actor))
+  })
+
+  // A personal display preference. Account identity, roles and recorded actor IDs stay fixed.
+  app.post("/api/profile", async (req, reply) => {
+    const actor = actorOf(req)
+    if (!actor) return reply.code(401).send({ error: "not signed in" })
+    if (req.headers.origin !== resolveGateConfig().origin)
+      return reply.code(403).send({ error: "Save your name from this Intelligence instance." })
+    const parsed = z
+      .object({ name: z.string().trim().min(1).max(80) })
+      .strict()
+      .safeParse(json(req))
+    if (!parsed.success) return reply.code(400).send({ error: "Enter a name between 1 and 80 characters." })
+    const updated = await prisma.member.updateMany({
+      where: { id: actor.memberId, tenantId: actor.tenantId, active: true },
+      data: { label: parsed.data.name },
+    })
+    if (updated.count !== 1) return reply.code(401).send({ error: "not signed in" })
+    return { ok: true, name: parsed.data.name }
+  })
+
+  app.get("/connectors/:id/edit", async (req, reply) => {
+    const actor = actorOf(req)
+    if (actor?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator required" })
+    const parsed = z.object({ id: z.uuid() }).safeParse(req.params)
+    if (!parsed.success) return reply.code(404).send({ error: "connector not found" })
+    const connection = await prisma.connection.findFirst({
+      where: { id: parsed.data.id, tenantId: actor.tenantId, kind: "github" },
+      select: { id: true, label: true, config: true },
+    })
+    if (!connection) return reply.code(404).send({ error: "connector not found" })
+    return html(
+      reply,
+      githubEditPage({ ...connection, config: connection.config as Record<string, unknown>, actor }),
+    )
+  })
+
   app.get("/connectors", async (req, reply) => {
     const t = await tenant()
     if (!t) return html(reply, onboarding())
@@ -836,7 +903,7 @@ export function buildApp(): FastifyInstance {
     const rows: ConnectorRow[] = await Promise.all(
       conns.map(async (c) => {
         const def = connectorFor(c.kind)
-        const [events, last, failedDeliveries] = await Promise.all([
+        const [events, last, failedDeliveries, lastDelivery] = await Promise.all([
           prisma.event.count({ where: { connectionId: c.id } }),
           prisma.event.findFirst({
             where: { connectionId: c.id },
@@ -845,6 +912,11 @@ export function buildApp(): FastifyInstance {
           }),
           prisma.rawEvent.count({
             where: { connectionId: c.id, normalizeError: { not: null } },
+          }),
+          prisma.rawEvent.findFirst({
+            where: { connectionId: c.id },
+            orderBy: { receivedAt: "desc" },
+            select: { receivedAt: true },
           }),
         ])
         return {
@@ -856,6 +928,7 @@ export function buildApp(): FastifyInstance {
           activatedAt: c.activatedAt,
           events,
           lastEventAt: last?.createdAt ?? null,
+          lastVerifiedDeliveryAt: lastDelivery?.receivedAt ?? null,
           lastPolledAt: c.lastPolledAt,
           lastPollSuccessAt: c.lastPollSuccessAt,
           lastPollError: c.lastPollError,
@@ -881,6 +954,7 @@ export function buildApp(): FastifyInstance {
         setup: d.setup,
         installed: installed.has(d.kind),
         builtIn: Boolean(d.builtIn),
+        ...catalogueDetails(d),
       }))
 
     return html(reply, connectorsPage({ rows, available, counts: await counts(t.id), ...withActor(req) }))
@@ -961,6 +1035,13 @@ export function buildApp(): FastifyInstance {
     return html(
       reply,
       detectorsPage({
+        configuration: {
+          settings: Object.fromEntries(cfg.map((c) => [c.detector, c.settings])),
+          sources: await prisma.connection.findMany({
+            where: { tenantId: t.id },
+            select: { id: true, label: true, kind: true },
+          }),
+        },
         counts: await counts(t.id),
         ...withActor(req),
         rows: DETECTORS.map((detector) => ({
@@ -1056,14 +1137,14 @@ export function buildApp(): FastifyInstance {
       prisma.detectorConfig.findUnique({
         where: { tenantId_detector: { tenantId: t.id, detector: "judgment" } },
       }),
-      listFindings(t.id, { limit: 1 }),
+      listFindings(t.id, { kind: "finding", limit: 1 }),
       prisma.judgmentRequest.count({ where: { tenantId: t.id } }),
       prisma.judgmentRequest.findMany({
         where: { tenantId: t.id },
         orderBy: { createdAt: "desc" },
         skip: (pageNum - 1) * pageSize,
         take: pageSize,
-        include: { finding: { select: { title: true } } },
+        include: { finding: { select: { title: true, dedupeKey: true } } },
       }),
     ])
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
@@ -1086,6 +1167,7 @@ export function buildApp(): FastifyInstance {
         createdAt: r.createdAt,
         findingId: r.findingId,
         findingTitle: r.finding?.title ?? "Finding",
+        observation: r.finding?.dedupeKey.startsWith("sensitive:") ?? false,
         status: r.status,
         model: resp?.model ?? config.judgment.model,
         anomalous: resp?.answers?.anomalous?.noul,
@@ -1218,7 +1300,12 @@ export function buildApp(): FastifyInstance {
 
   app.get("/api/findings", async (req, reply) => {
     // Preserve the API's historical all-status default; the console opens on actionable findings.
-    const parsed = FINDING_QUERY.safeParse({ status: "all", limit: 100, ...(req.query as object) })
+    const parsed = FINDING_QUERY.safeParse({
+      kind: "all",
+      status: "all",
+      limit: 100,
+      ...(req.query as object),
+    })
     if (!parsed.success) return reply.code(400).send({ error: "invalid finding filters" })
     const t = await tenant()
     if (!t) return { findings: [] }

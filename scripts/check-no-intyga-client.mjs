@@ -108,7 +108,10 @@ for (const dir of roots) {
 
     lines.forEach((line, i) => {
       if (COMMENT.test(line)) return
-      if (FORBIDDEN_PATH_PATTERNS.some((p) => p.test(line))) {
+      // A static Google documentation link contains /admin/ but is not an Intyga API call.
+      // Keep this exception limited to the catalogue docsUrl property and Google's docs host.
+      const executable = line.replace(/docsUrl:\s*"https:\/\/developers\.google\.com\/[^"\s]+"/, "")
+      if (FORBIDDEN_PATH_PATTERNS.some((p) => p.test(executable))) {
         failures.push(
           `${relative}:${i + 1} references an Intyga host in executable code.\n` +
             `    Intelligence is a sink: Intyga pushes to us, we never call Intyga.\n` +

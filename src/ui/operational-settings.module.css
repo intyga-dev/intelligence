@@ -1,0 +1,19 @@
+.detectorFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.detectorFields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.detectorTarget {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.detectorConfig button {
+  margin: 6px 8px 0 0;
+}
