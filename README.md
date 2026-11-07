@@ -488,6 +488,9 @@ pnpm exec tsx scripts/e2e-demo.ts <connectionId> <webhookSecret> http://localhos
 
 ## Contributing and security
 
+- [Deployment runbook](docs/RELEASE_RUNBOOK.html) — the 7 November release checklist for Core,
+  package publishing, and Intelligence. Open the HTML file in a browser to save your checks locally.
+
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to propose a change, and the two rules a pull request
   here has to clear.
 - [SECURITY.md](SECURITY.md) — how to report a vulnerability. **Do not open a public issue.**
