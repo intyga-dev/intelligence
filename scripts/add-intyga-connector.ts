@@ -9,10 +9,10 @@ import { encryptSecret } from "../src/store/crypto.ts"
 const [label = "INTYGA staging", slug] = process.argv.slice(2).filter((a) => !a.startsWith("--"))
 
 const tenant = slug
-  ? await prisma.tenant.findUnique({ where: { slug }, select: { id: true, slug: true, intygaOrigin: true } })
+  ? await prisma.tenant.findUnique({ where: { slug }, select: { id: true, slug: true } })
   : await prisma.tenant.findFirst({
       orderBy: { createdAt: "asc" },
-      select: { id: true, slug: true, intygaOrigin: true },
+      select: { id: true, slug: true },
     })
 
 if (!tenant) {
@@ -33,7 +33,7 @@ const connection = await prisma.connection.create({
   select: { id: true, label: true },
 })
 
-const origin = tenant.intygaOrigin ?? "http://localhost:4101"
+const origin = process.env.PUBLIC_URL ?? "http://localhost:4100"
 
 console.log(`
 Added connector "${connection.label}"

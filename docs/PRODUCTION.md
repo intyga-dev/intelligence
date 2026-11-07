@@ -3,32 +3,36 @@
 A step-by-step guide for self-hosting. Each step ends with **Done when**, a check you can run. Do
 them in order: later steps assume earlier ones.
 
+For the bundled Docker stack with automatic secret generation, migrations and scheduling, start with
+[SELF_HOST.md](SELF_HOST.md). This guide covers independently managed infrastructure.
+
 What you will run:
 
 ```
             your scheduler ──POST /internal/tick (1/min)──┐
                                                           ▼
  browser ──TLS──▶ reverse proxy ──▶ Intelligence (1 container) ──▶ your Postgres
- GitHub/Sentry/… webhooks ─────────────────────▲                 └──▶ INTYGA (approvals only)
+ GitHub/Sentry/… webhooks ─────────────────────▲                 └──▶ INTYGA (sign-in and approvals)
 ```
 
 One container, one Postgres database and one scheduler. Intelligence holds no INTYGA
-credential beyond a platform key scoped to its own users, and INTYGA's availability does not
+credential beyond a SERVICE key that requests approvals, and INTYGA's availability does not
 depend on it.
 
 ---
 
 ## 0. Decisions to make first — these are hard to change later
 
-| Decision | Why it is sticky |
-| :--- | :--- |
-| **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It is the WebAuthn RP ID. Every administrator's passkey is bound to it; moving hosts means everyone re-enrols. |
-| **`SECRETS_ENC_KEY`** | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and the INTYGA key. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
-| **Single instance** | Rate limits and the tick guard are in-process. Run exactly one container. Two replicas would double the allowances; correctness holds, but the guards weaken. |
+| Decision                                                                      | Why it is sticky                                                                                                                                                                                                                                                   |
+| :---------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It fixes the embedded application origin/RP ID and approval target. Moving hosts requires a new registration and app-scoped passkeys. Optional OIDC also requires its callback registration to change.                                                             |
+| **`SECRETS_ENC_KEY`**                                                         | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and temporary browser state. The INTYGA service key stays in deployment secrets. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
+| **Single instance**                                                           | Rate limits and the tick guard are in-process. Run exactly one container. Two replicas would double the allowances; correctness holds, but the guards weaken.                                                                                                      |
 
 ## 1. Prerequisites
 
-- An **INTYGA workspace**, with an administrator who can use the console's `/platform` page and create API keys.
+- An **INTYGA workspace**, with an administrator who can use **Integrations → App sign-in** and create API keys.
+  Your INTYGA deployment must support member applications, SERVICE keys and application trust-anchor exports. OIDC App sign-in is optional.
 - A **Postgres** database for Intelligence alone, never INTYGA's database. The project is developed and
   tested against Postgres 16.
 - A place to run one container (Fly.io, Cloud Run with `--max-instances=1`, a VM, Kubernetes with
@@ -38,24 +42,17 @@ depend on it.
 
 **Done when:** you can reach an empty Postgres from where the container will run.
 
-## 2. INTYGA side — register Intelligence as a platform Relying Party
+## 2. INTYGA side — register the embedded application
 
-In the INTYGA console:
+Create a SERVICE identity and API key, and configure its ordinary workspace approval rules.
+Register Intelligence under **Integrations → Member applications** with its exact HTTPS origin
+and that service client ID. The RP ID is the origin hostname; it cannot overlap the console’s
+passkey scope. Save the returned application ID and short-lived ownership proof.
 
-1. **`/platform` → register a Relying Party.** RP ID = your hostname (bare host, no scheme). Origin = `https://<hostname>`.
-   Register it **live**: test mode only admits loopback origins. It counts toward your plan's live-RP
-   allowance until the dedicated integration RP type ships.
-2. **Create a platform API key** with exactly these scopes: `subjects:write`, `credentials:write`,
-   `receipts:create`, `receipts:read`. It authenticates with `private_key_jwt`. Generate the key pair
-   locally, ES256 (P-256):
-   ```bash
-   openssl ecparam -name prime256v1 -genkey -noout -out ec.key
-   openssl pkcs8 -topk8 -nocrypt -in ec.key -out rp.pk8
-   openssl ec -in ec.key -pubout -out rp.pub.pem     # upload this public key when creating the key
-   ```
-   Keep `rp.pk8` secret; only the public key goes to INTYGA.
+Only active human workspace members can link application credentials. External platform subjects
+cannot use this path. Template recognition is advisory and grants no authority.
 
-**Done when:** you have the client ID, `rp.pk8`, and the RP shows as live in `/platform`.
+**Done when:** the service and member application exist in the intended workspace.
 
 ## 3. Configure the environment
 
@@ -64,7 +61,10 @@ Generate each secret with `openssl rand -base64 32`. The server **refuses to sta
 `DATABASE_URL`, `TICK_TOKEN` or `SECRETS_ENC_KEY` is missing or a placeholder, so a bad config fails at
 deploy instead of later.
 
-Set `SETUP_TOKEN` only if you will finish setup in the browser (step 6a). Remove it afterwards.
+Set `PUBLIC_URL`, `INTYGA_URL`, `INTYGA_CONSOLE_URL`, `INTYGA_WORKSPACE_ID`, the SERVICE client ID
+and secret, and `INTYGA_EMBEDDED_APPLICATION_ID`. Mount `config/` read-only and set
+`INTYGA_TRUST_ANCHOR_FILE` and `INTYGA_EMBEDDED_REGISTRATION_FILE` to the files inside it.
+There is no browser setup token or database credential binding. `INTYGA_OIDC_CLIENT_ID` is optional.
 
 **Done when:** every uncommented variable in the template has a value in your secret store.
 
@@ -94,31 +94,23 @@ Run the image with your environment. It listens on `PORT` (4100) on both IPv4 an
 
 **Done when:** `https://<hostname>/ready` returns `{"ok":true,…}`.
 
-## 6. Bind the workspace and enrol the first administrator
+## 6. Prove ownership, link members and sign in
 
-Choose one:
+Serve the registration proof at `/.well-known/intyga-embedded` by mounting its file and setting
+`INTYGA_EMBEDDED_REGISTRATION_FILE`. Choose **Verify ownership** in INTYGA before the proof
+expires. A copied Intelligence template marker does not satisfy this proof.
 
-**6a. In the browser.** With `SETUP_TOKEN` set, open `https://<hostname>/`, enter the setup token,
-the INTYGA details from step 2 and the first administrator. You are taken straight to passkey
-enrolment. Then **remove `SETUP_TOKEN`** and redeploy.
+Each member chooses **Link my INTYGA membership** from Intelligence, approves with their console
+passkey, and creates a new passkey after returning to Intelligence. The one-use grant is bound to
+the member, application, origin, version and initiating browser through PKCE.
 
-**6b. From the CLI**, with no browser setup at all:
-```bash
-docker exec <container> node_modules/.bin/tsx scripts/provision-tenant.ts default <admin-subject-id>
-docker exec <container> node_modules/.bin/tsx scripts/bind-workspace.ts \
-  --base-url https://api.intyga.com --client-id <id> \
-  --rp-id <hostname> --origin https://<hostname> --key /run/secrets/rp.pk8
-```
-`--key` is read inside the container, so mount `rp.pk8` there (as a secret file, e.g. at
-`/run/secrets/rp.pk8`); it is stored encrypted in the database after this and the file can go.
-`bind-workspace` prints a **one-time enrolment link** per administrator. Treat it like a password;
-it expires in 72 hours. The first person to open it becomes that administrator.
+Export the application's trust anchor from INTYGA Member applications and mount it as
+`INTYGA_TRUST_ANCHOR_FILE`. Its workspace must match `INTYGA_WORKSPACE_ID`. Refresh it after
+passkey additions or revocations. Neither the service credential nor this anchor is stored in the
+Intelligence database.
 
-Then sign in at `https://<hostname>/login` and press **Settings → Test connection**.
-
-**Done when:** you are signed in and Test connection succeeds. Before relying on Intelligence, add
-a second administrator (**Members → Add**) on a separate device, so one lost device cannot lock
-everyone out.
+**Done when:** an ADMIN signs in with an application passkey, **Settings → Test connection**
+succeeds, and a protected change is approved in place and applied. MEMBERs can read Intelligence.
 
 ## 7. Schedule the tick
 
@@ -150,20 +142,30 @@ recent **Last delivered**.
 
 ## 9. Operate
 
-| Task | How |
-| :--- | :--- |
-| **Upgrade** | Build the new image, run step 4's migration, then replace the container. |
-| **Backups** | Postgres backups with point-in-time recovery. Intelligence holds derived observations, not a system of record, but it does hold connector configuration and history. Test a restore once. |
-| **Lost passkey, one admin left** | An administrator issues a new link: **Members → Enrolment link**. |
-| **Lost passkey, no admins left** | `docker exec … tsx scripts/invite-member.ts <subject-id>` (requires database access, by design). |
-| **Rotate the INTYGA key** | Settings → replace the key (not a signed action: it must work when the old key no longer does). |
-| **Watch** | Alert on `/ready` failing, and on the tick scheduler's failures. Nothing else pages you if ticks stop: findings simply stop appearing. |
+| Task                                          | How                                                                                                                                                                                        |
+| :-------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Upgrade**                                   | Build the new image, run step 4's migration, then replace the container.                                                                                                                   |
+| **Backups**                                   | Postgres backups with point-in-time recovery. Intelligence holds derived observations, not a system of record, but it does hold connector configuration and history. Test a restore once.  |
+| **Lost passkey**                              | Recover the INTYGA account, link a replacement application passkey, and refresh the mounted application trust anchor. Revocation/recovery invalidates embedded signing eligibility.        |
+| **Rotate the SERVICE secret or trust anchor** | Update the deployment secret or mounted application anchor and restart. The anchor must name the connected workspace. INTYGA rechecks eligibility at redemption.                           |
+| **Change workspace**                          | Replace deployment configuration and the mounted anchor, register the application in the new workspace, and restart. The binding fingerprint invalidates old sessions and pending actions. |
+| **Watch**                                     | Alert on `/ready` failing, and on the tick scheduler's failures. Nothing else pages you if ticks stop: findings simply stop appearing.                                                     |
 
 ## Security properties to know
 
 - Intelligence **may ask INTYGA for approval and may never grant or bypass it** (`pnpm check:boundary`).
-- **Administrators are passkeys only.** Enrolment needs an admin-issued one-time link; subject IDs are not secrets.
+- **Embedded identity comes from the active workspace membership bound to the passkey that signed the browser’s login approval.** Optional OIDC verifies signed identity tokens with PKCE.
+  Intelligence uses server-side sessions; role changes are refreshed at sign-in. Sessions expire after
+  12 hours unless revoked locally, so upstream membership changes do not instantly revoke them.
 - **Single-tenant per deployment, no row-level security.** Do not host two unrelated organisations on
   one instance (see the header of `prisma/schema.prisma`).
-- **What leaves the host:** approval digests to INTYGA; alert payloads to destinations you activated;
+- **What leaves the host:** sign-in exchanges and approval descriptions, targets and parameters to
+  INTYGA; alert payloads to destinations you activated;
   judgment requests only if you enabled that provider.
+
+- Application credentials are separate from console credentials. A service cannot enroll an email
+  address as somebody else, rewrite a human DID, or use an application credential for console login.
+- Embedded approvals use the ordinary policy engine: quorum, requester exclusions, hardware rules,
+  expiry and one-use redemption still apply. Unsupported hardware evidence fails closed.
+- An administrator can pin arbitrary public keys in an anchor. A bad anchor can make actions fail;
+  it cannot skip INTYGA's approval and redemption checks.

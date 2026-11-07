@@ -4,10 +4,20 @@
 // detectors page (what is shown). A detector that is not in this list does not exist anywhere —
 // which is the point: the console once listed two detectors that had no code behind them.
 
-export const DETECTORS = ["denial-burst", "sensitive-code-change", "deploy-regression"] as const
+export const DETECTORS = [
+  "denial-burst",
+  "sensitive-code-change",
+  "deploy-regression",
+  "metrics-health",
+] as const
 export type DetectorId = (typeof DETECTORS)[number]
 
 export const DETECTOR_INFO: Readonly<Record<DetectorId, { description: string; needs: string }>> = {
+  "metrics-health": {
+    description:
+      "New failures in known INTYGA health counters, or broken ledger blocks/checkpoints. Ignores initial counter values, resets and gaps over 15 minutes. Only bare metric queries are evaluated.",
+    needs: "Metrics connector with the default INTYGA queries",
+  },
   "denial-burst": {
     description:
       "A subject refused far more than it usually is, judged against its own history — plus any action type it has never attempted before.",

@@ -1,3 +1,4 @@
+import { EMBEDDED_BROWSER_JS } from "../embedded/browser.ts"
 import { CHART_CSS, CHART_JS } from "./charts.ts"
 import { THEME_CSS } from "./theme.ts"
 
@@ -36,6 +37,7 @@ const NAV: { section: string; items: { href: string; label: string; key?: keyof 
     section: "Watch",
     items: [
       { href: "/", label: "Overview" },
+      { href: "/services", label: "Services" },
       { href: "/findings", label: "Findings", key: "findings" },
       { href: "/activity", label: "Activity" },
     ],
@@ -203,63 +205,54 @@ export function page(o: PageOpts): string {
 
 <dialog id="approve">
   <form method="dialog">
-    <div class="head"><h3>Approve with your passkey</h3></div>
+    <div class="head"><h3>Approve action</h3></div>
     <div class="body">
       <p class="mut" style="margin:0 0 12px">
-        This action changes how Intelligence behaves, so it is signed the same way any protected
-        operation is — a human, a passkey, a receipt.
+        This action changes how Intelligence behaves, so it is approved the same way any protected
+        operation is — under your workspace's approval rules, with a passkey, leaving a receipt.
       </p>
       <div id="approve-summary" class="impact-low"></div>
+      <p id="approve-status" class="mut" style="margin:12px 0 0"></p>
+      <p id="approve-share" hidden>Share with another approver: <input id="approve-share-url" readonly aria-label="Approval link"></p>
       <p id="approve-error" class="mut" style="color:var(--red);margin:12px 0 0"></p>
     </div>
     <div class="foot">
       <button value="cancel" class="ghost">Cancel</button>
-      <button value="ok" id="approve-go" class="primary">Approve</button>
+      <button type="button" id="approve-embedded" class="primary" hidden>Approve with passkey</button>
+      <a id="approve-go" class="primary" href="#" target="_blank" rel="noopener" hidden>Open approval ↗</a>
     </div>
   </form>
 </dialog>
 
 <script>
 ${CHART_JS}
+${EMBEDDED_BROWSER_JS}
 
 // ─── the gated-action ceremony ────────────────────────────────────────────
-// Open a challenge, get an assertion from the admin's passkey on THIS origin, then complete. The
-// parameters are frozen server-side at step one; nothing the browser sends at step two can change
-// what executes.
+// Open an approval, hand the admin the console link, and poll until a member of the workspace has
+// signed it (or refused). The parameters are frozen server-side at step one; nothing the browser
+// sends afterwards can change what executes, and the server verifies the receipt before it runs.
 const dlg = document.getElementById("approve");
 const sumEl = document.getElementById("approve-summary");
+const statusEl = document.getElementById("approve-status");
 const errEl = document.getElementById("approve-error");
 const goEl = document.getElementById("approve-go");
-
-function b64urlToBuf(s) {
-  if (typeof s !== "string") return new Uint8Array();
-  const p = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=");
-  return Uint8Array.from(atob(p), (c) => c.charCodeAt(0));
-}
-function bufToB64url(b) {
-  return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
-}
-function unwrapOptions(obj) {
-  let cur = obj;
-  while (cur && (cur.publicKey || cur.options)) {
-    cur = cur.publicKey || cur.options;
-  }
-  return cur || {};
-}
-
+const embeddedEl = document.getElementById("approve-embedded");
+let pollTimer = null;
+dlg.addEventListener("close", () => { if (pollTimer) clearTimeout(pollTimer); pollTimer = null; });
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-action]");
   if (!btn) return;
   e.preventDefault();
-
   const action = btn.dataset.action;
   const params = JSON.parse(btn.dataset.params || "{}");
   errEl.textContent = "";
+  statusEl.textContent = "";
   sumEl.textContent = "Preparing…";
   sumEl.className = "impact-low";
-  goEl.disabled = true;
+  goEl.hidden = true;
+  embeddedEl.hidden = true;
   dlg.showModal();
-
   let opened;
   try {
     const r = await fetch("/api/actions/open", {
@@ -273,65 +266,40 @@ document.addEventListener("click", async (e) => {
     errEl.textContent = err.message;
     return;
   }
-
   sumEl.textContent = opened.summary;
   sumEl.className = "impact-" + opened.impact;
-  goEl.disabled = false;
-
-  goEl.onclick = async (ev) => {
-    ev.preventDefault();
-    goEl.disabled = true;
-    errEl.textContent = "Waiting for your passkey…";
+  const share=document.getElementById("approve-share");
+  share.hidden=!opened.embeddedApprovalUrl;
+  document.getElementById("approve-share-url").value=opened.embeddedApprovalUrl||"";
+  goEl.href = opened.approveUrl;
+  goEl.hidden = Boolean(opened.embedded);
+  embeddedEl.hidden = !opened.embedded;
+  embeddedEl.disabled = false;
+  embeddedEl.onclick = async () => {
+    embeddedEl.disabled = true;
+    try { const base='/api/actions/'+encodeURIComponent(opened.nonce)+'/embedded/';await signEmbedded(base+'options',base+'verify',{});statusEl.textContent='Passkey accepted. Waiting for the workspace approval quorum…'; }
+    catch(err){errEl.textContent=err.message||'Approval cancelled.';embeddedEl.disabled=false;}
+  };
+  statusEl.textContent = opened.embedded ? "Approve here with your application passkey. Workspace quorum rules apply." : "Waiting for an approver in your workspace. Open the approval to sign it yourself, " +
+    "or wait for a colleague — approvers are notified by INTYGA.";
+  const poll = async () => {
+    let body;
     try {
-      const o = unwrapOptions(opened.options);
-      const assertion = await navigator.credentials.get({
-        publicKey: {
-          ...o,
-          challenge: b64urlToBuf(o.challenge),
-          allowCredentials: (o.allowCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
-        },
-      });
-      const res = await fetch("/api/actions/complete", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          nonce: opened.nonce,
-          assertion: {
-            id: assertion.id, rawId: bufToB64url(assertion.rawId), type: assertion.type,
-            response: {
-              clientDataJSON: bufToB64url(assertion.response.clientDataJSON),
-              authenticatorData: bufToB64url(assertion.response.authenticatorData),
-              signature: bufToB64url(assertion.response.signature),
-              userHandle: assertion.response.userHandle ? bufToB64url(assertion.response.userHandle) : null,
-            },
-          },
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "the approval was refused");
-      if (body.invite) {
-        // Shown once: only its hash is stored. Built from this page's origin, which is the origin
-        // the passkey will be bound to. The token rides in the fragment so it never reaches a log.
-        const link = location.origin + "/members/enrol#invite=" + body.invite.token;
-        sumEl.className = "impact-low";
-        sumEl.textContent = "Enrolment link for " + body.invite.label + ". Send it to them over a channel " +
-          "you trust. It works once, is shown only now, and expires " +
-          new Date(body.invite.expiresAt).toLocaleString() + ".";
-        const box = document.createElement("input");
-        box.readOnly = true; box.value = link; box.style.width = "100%"; box.style.marginTop = "10px";
-        sumEl.appendChild(box); box.select();
-        errEl.textContent = "";
-        goEl.textContent = "Done";
-        goEl.disabled = false;
-        goEl.onclick = () => { dlg.close(); location.reload(); };
-        return;
-      }
-      dlg.close();
-      location.reload();
+      const res = await fetch("/api/actions/" + encodeURIComponent(opened.nonce), { headers: { accept: "application/json" } });
+      body = await res.json();
+      if (!res.ok) throw new Error(body.error || "could not read the approval");
     } catch (err) {
       errEl.textContent = err.message || String(err);
-      goEl.disabled = false;
+      pollTimer = setTimeout(poll, 5000);
+      return;
     }
+    if (body.status === "pending") { pollTimer = setTimeout(poll, 2500); return; }
+    if (body.status === "refused") { statusEl.textContent = ""; errEl.textContent = body.reason || "not approved"; goEl.hidden = true; return; }
+    statusEl.textContent = "Approved and applied.";
+    dlg.close();
+    location.reload();
   };
+  pollTimer = setTimeout(poll, 2500);
 });
 </script>
 </body></html>`

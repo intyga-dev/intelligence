@@ -1,11 +1,23 @@
 import { z } from "zod"
 import { newSigningSecret, parseTarget } from "../alerts/deliver.ts"
-import { issueInvite } from "../auth/invite.ts"
 import { DETECTORS } from "../domain/detectors/index.ts"
 import { isProdLike } from "../config.ts"
-import type { GatedAction } from "../gate/intent.ts"
 import { prisma } from "../store/client.ts"
 import { decryptSecret, encryptSecret } from "../store/crypto.ts"
+
+/** Privileged Intelligence actions. The value is the signed actionType, so it binds the action to its parameters. */
+export type GatedAction =
+  | "intelligence.service.create"
+  | "intelligence.connector.assign-service"
+  | "intelligence.connector.activate"
+  | "intelligence.connector.deactivate"
+  | "intelligence.judgment.enable"
+  | "intelligence.judgment.disable"
+  | "intelligence.data.purge"
+  | "intelligence.alert.activate"
+  | "intelligence.alert.deactivate"
+  | "intelligence.detector.enable"
+  | "intelligence.detector.disable"
 
 // Every privileged action in one table.
 //
@@ -29,27 +41,8 @@ export interface ActionDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   impact: "low" | "medium" | "high"
 }
 
-/**
- * What an action hands back to the approver who ran it, beyond "applied".
- *
- * Today only an enrolment invite: minted INSIDE `run`, after the signature is redeemed, so the token
- * never appears in the signed (and stored-in-the-clear) parameters. Shown once in the response and
- * stored only as a hash.
- */
-export interface ActionOutcome {
-  invite?: { token: string; label: string; expiresAt: string }
-}
-
-/** Issue an invite for an active member, or fail the action if there is none. */
-async function inviteFor(tenantId: string, externalId: string): Promise<ActionOutcome> {
-  const member = await prisma.member.findFirst({
-    where: { tenantId, externalId, active: true },
-    select: { id: true, label: true },
-  })
-  if (!member) throw new Error("no active administrator with that subject id")
-  const invite = await issueInvite(prisma, { tenantId, memberId: member.id })
-  return { invite: { token: invite.token, label: member.label, expiresAt: invite.expiresAt.toISOString() } }
-}
+/** What an action hands back beyond "applied". Nothing today; kept so `run` has a stable shape. */
+export type ActionOutcome = { note?: string }
 
 /**
  * Identity helper that preserves each action's inferred parameter type.
@@ -65,6 +58,62 @@ function defineAction<S extends z.ZodTypeAny>(def: ActionDef<S>): ActionDef<S> {
 const connectorParams = z.object({ connectionId: z.uuid() })
 
 export const ACTIONS = {
+  "intelligence.service.create": defineAction({
+    impact: "low",
+    schema: z.object({
+      name: z.string().trim().min(1).max(80),
+      description: z.string().trim().max(300).default(""),
+    }),
+    summary: (p) => `Create the service “${p.name}” to group its sources and findings.`,
+    run: async (tenantId, p) => {
+      await prisma.service.create({ data: { tenantId, name: p.name, description: p.description } })
+    },
+  }),
+  "intelligence.connector.assign-service": defineAction({
+    impact: "medium",
+    schema: z.object({ connectionId: z.uuid(), serviceId: z.uuid().nullable() }),
+    summary: (p) =>
+      p.serviceId
+        ? `Assign source ${p.connectionId} to service ${p.serviceId}. Group its unassigned history and correlate future observations within this service.`
+        : `Remove the service assignment from source ${p.connectionId}. Previously grouped history stays with its service.`,
+    run: async (tenantId, p) => {
+      await prisma.$transaction(async (tx) => {
+        if (
+          p.serviceId &&
+          !(await tx.service.findFirst({ where: { id: p.serviceId, tenantId }, select: { id: true } }))
+        ) {
+          throw new Error("service not found in this tenant")
+        }
+        const updated = await tx.connection.updateMany({
+          where: { id: p.connectionId, tenantId },
+          data: { serviceId: p.serviceId },
+        })
+        if (updated.count !== 1) throw new Error("connector not found in this tenant")
+        if (p.serviceId) {
+          // Fill unassigned history only. Reassigning a source never moves earlier incidents.
+          await tx.event.updateMany({
+            where: { tenantId, connectionId: p.connectionId, serviceId: null },
+            data: { serviceId: p.serviceId },
+          })
+          await tx.finding.updateMany({
+            where: {
+              tenantId,
+              serviceId: null,
+              OR: [
+                {
+                  evidence: {
+                    some: { kind: "eventRef", data: { path: ["connectionId"], equals: p.connectionId } },
+                  },
+                },
+                { dedupeKey: { startsWith: `regression:${p.connectionId}:` } },
+              ],
+            },
+            data: { serviceId: p.serviceId },
+          })
+        }
+      })
+    },
+  }),
   "intelligence.connector.activate": defineAction({
     impact: "medium",
     schema: connectorParams,
@@ -139,95 +188,6 @@ export const ACTIONS = {
       if (p.scope === "findings" || p.scope === "all") {
         await prisma.finding.deleteMany({ where: { tenantId, lastSeenAt: { lt: cutoff } } })
       }
-    },
-  }),
-
-  "intelligence.member.add": defineAction({
-    impact: "high",
-    schema: z.object({
-      externalId: z
-        .string()
-        .min(1)
-        .max(200)
-        .regex(/^[A-Za-z0-9._:@+=-]+$/),
-      label: z.string().min(1).max(200),
-    }),
-    summary: (p: { label: string }) =>
-      `Add "${p.label}" as an Intelligence administrator and create a one-time enrolment link for ` +
-      "them. They will be able to approve privileged actions once they enrol a passkey with it.",
-    run: async (tenantId, p: { externalId: string; label: string }) => {
-      await prisma.member.upsert({
-        where: { tenantId_externalId: { tenantId, externalId: p.externalId } },
-        create: { tenantId, externalId: p.externalId, label: p.label },
-        update: { label: p.label, active: true },
-      })
-      return inviteFor(tenantId, p.externalId)
-    },
-  }),
-
-  /**
-   * A fresh enrolment link for an existing administrator: never enrolled, a lost link, a new device.
-   *
-   * High impact, and signed, because the link is the power to add a passkey to that account — the
-   * same power as approving as them. Issuing one supersedes any link still open for that member.
-   */
-  "intelligence.member.invite": defineAction({
-    impact: "high",
-    schema: z.object({ externalId: z.string().min(1).max(200) }),
-    summary: (p: { externalId: string }) =>
-      `Create a one-time enrolment link for administrator "${p.externalId}". Whoever opens it can add ` +
-      "a passkey to that administrator — send it only to them. Any earlier link for them stops working.",
-    run: async (tenantId, p: { externalId: string }) => inviteFor(tenantId, p.externalId),
-  }),
-
-  /**
-   * Repoint this tenant at a different Intyga workspace.
-   *
-   * The most consequential action here: the workspace is what authenticates every administrator,
-   * so rebinding it is the one change that could hand control of this tenant to someone else. It
-   * is therefore signed by the CURRENT workspace's passkey — you must still be who you were to say
-   * who you will be.
-   *
-   * The private key is deliberately NOT a parameter. Signed parameters are stored in PendingAction
-   * in the clear, so routing a credential through the digest would write it to disk unencrypted —
-   * worse than what the signature was protecting. The key is submitted separately and encrypted on
-   * arrival; what is signed is the workspace IDENTITY, which is what actually matters.
-   */
-  "intelligence.workspace.rebind": defineAction({
-    impact: "high",
-    schema: z.object({
-      baseUrl: z.url(),
-      clientId: z.string().min(1).max(200),
-      rpId: z.string().min(1).max(253),
-      origin: z.url(),
-    }),
-    summary: (p: { baseUrl: string; rpId: string }) =>
-      `Repoint Intelligence at a DIFFERENT Intyga workspace (${p.baseUrl}, RP ${p.rpId}). ` +
-      "Administrators of the current workspace will no longer be able to approve anything here.",
-    run: async (tenantId, p: { baseUrl: string; clientId: string; rpId: string; origin: string }) => {
-      await prisma.tenant.update({
-        where: { id: tenantId },
-        data: {
-          intygaBaseUrl: p.baseUrl,
-          intygaClientId: p.clientId,
-          intygaRpId: p.rpId,
-          intygaOrigin: p.origin,
-        },
-      })
-    },
-  }),
-
-  "intelligence.member.remove": defineAction({
-    impact: "high",
-    schema: z.object({ externalId: z.string().min(1).max(200) }),
-    summary: (p: { externalId: string }) =>
-      `Remove administrator "${p.externalId}". They will no longer be able to approve anything here.`,
-    run: async (tenantId, p: { externalId: string }) => {
-      const res = await prisma.member.updateMany({
-        where: { tenantId, externalId: p.externalId },
-        data: { active: false },
-      })
-      if (res.count !== 1) throw new Error("member not found in this tenant")
     },
   }),
 

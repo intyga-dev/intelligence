@@ -22,3 +22,7 @@ src/generated/
 # ROOT-ANCHORED on purpose. The unanchored `rp.*` also matched src/gate/rp.ts — the module that runs
 # every approval ceremony — so it was never committed and a fresh clone did not compile.
 /rp.*
+.selfhost/
+
+# Deployment-specific public trust anchor and any adjacent local credentials.
+/config/

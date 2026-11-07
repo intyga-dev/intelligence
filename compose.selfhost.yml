@@ -1,0 +1,102 @@
+name: intyga-intelligence-selfhost
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: intelligence
+      POSTGRES_DB: intelligence
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run node scripts/self-host.mjs first}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intelligence -d intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: intyga-intelligence:selfhost
+    build: .
+    environment:
+      DIRECT_URL: postgresql://intelligence:${POSTGRES_PASSWORD}@postgres:5432/intelligence
+    command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+
+  app:
+    image: intyga-intelligence:selfhost
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://intelligence:${POSTGRES_PASSWORD}@postgres:5432/intelligence
+      PUBLIC_URL: ${PUBLIC_URL:?Public origin is required}
+      INTYGA_URL: ${INTYGA_URL:-https://api.intyga.com}
+      INTYGA_CONSOLE_URL: ${INTYGA_CONSOLE_URL:-https://app.intyga.com}
+      INTYGA_INTERNAL_URL: ${INTYGA_INTERNAL_URL:-}
+      INTYGA_WORKSPACE_ID: ${INTYGA_WORKSPACE_ID:-}
+      INTYGA_EMBEDDED_APPLICATION_ID: ${INTYGA_EMBEDDED_APPLICATION_ID:-}
+      INTYGA_EMBEDDED_REGISTRATION_FILE: /app/config/intyga-embedded-registration.json
+      INTYGA_OIDC_CLIENT_ID: ${INTYGA_OIDC_CLIENT_ID:-}
+      INTYGA_SERVICE_CLIENT_ID: ${INTYGA_SERVICE_CLIENT_ID:-}
+      INTYGA_SERVICE_CLIENT_SECRET: ${INTYGA_SERVICE_CLIENT_SECRET:-}
+      INTYGA_TRUST_ANCHOR_FILE: /app/config/intyga-trust-anchor.json
+      SECRETS_ENC_KEY: ${SECRETS_ENC_KEY:?Encryption key is required}
+      TICK_TOKEN: ${TICK_TOKEN:?Tick token is required}
+    volumes:
+      - ./config:/app/config:ro
+    ports:
+      - "127.0.0.1:${SELFHOST_HTTP_PORT:-4100}:4100"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4100/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  scheduler:
+    image: intyga-intelligence:selfhost
+    restart: unless-stopped
+    init: true
+    command: ["node", "src/jobs/scheduler.ts"]
+    environment:
+      TICK_URL: http://app:4100/internal/tick
+      TICK_TOKEN: ${TICK_TOKEN:?Tick token is required}
+    depends_on:
+      app:
+        condition: service_healthy
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const fs=require('node:fs');try{process.exit(Date.now()-Number(fs.readFileSync('/tmp/intelligence-last-tick','utf8'))<420000?0:1)}catch{process.exit(1)}",
+        ]
+      interval: 60s
+      timeout: 5s
+      start_period: 60s
+      retries: 2
+
+volumes:
+  database:

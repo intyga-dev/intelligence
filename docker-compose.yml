@@ -23,6 +23,8 @@ services:
   app:
     build: .
     container_name: intelligence-app
+    command: ["pnpm", "dev"]
+    init: true
     restart: unless-stopped
     depends_on:
       postgres:
@@ -40,16 +42,33 @@ services:
       DATABASE_URL: postgresql://intelligence:dev-local-only@postgres:5432/intelligence_dev
       DIRECT_URL: postgresql://intelligence:dev-local-only@postgres:5432/intelligence_dev
       PORT: "4100"
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4100}
+      INTYGA_CONSOLE_URL: ${INTYGA_CONSOLE_URL:-https://app.intyga.com}
+      # Use an HTTPS gateway from Docker. For a local HTTP gateway, run pnpm dev on the host.
+      INTYGA_URL: ${INTYGA_URL:-}
+      INTYGA_INTERNAL_URL: ${INTYGA_INTERNAL_URL:-}
+      INTYGA_WORKSPACE_ID: ${INTYGA_WORKSPACE_ID:-}
+      INTYGA_OIDC_CLIENT_ID: ${INTYGA_OIDC_CLIENT_ID:-}
+      INTYGA_SERVICE_CLIENT_ID: ${INTYGA_SERVICE_CLIENT_ID:-}
+      INTYGA_SERVICE_CLIENT_SECRET: ${INTYGA_SERVICE_CLIENT_SECRET:-}
+      INTYGA_TRUST_ANCHOR_FILE: /app/config/intyga-trust-anchor.json
       TICK_TOKEN: dev-tick-token-change-me
-      SETUP_TOKEN: dev-setup-token-change-me
       SECRETS_ENC_KEY: dev-secrets-enc-key-change-me-32b
       # Unset on purpose: with no key the null judgment provider runs and nothing leaves the host.
       # TYPESAFE_API_KEY: ""
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    # Bind the local checkout (including its installed dependencies) for tsx hot reload.
+    volumes:
+      - .:/app
+      - ./config:/app/config:ro
     ports:
       - "4100:4100"
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:4100/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
       interval: 10s
       timeout: 5s
       retries: 6

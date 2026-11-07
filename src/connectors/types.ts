@@ -19,6 +19,8 @@ export type SourceKind = string
  * new string key that silently appears.
  */
 export interface NormalizedEvent {
+  /** Assigned by Intelligence from the connection, never trusted from a vendor payload. */
+  serviceId?: string | null
   connectionId: string
   source: SourceKind
   /** Idempotency key within the source. Unique per (connectionId, sourceId). */

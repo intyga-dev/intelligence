@@ -35,14 +35,14 @@ x-intelligence-signature: t=1790000000,v1=5f2c…(64 hex characters)
 }
 ```
 
-| Field | Required | Meaning |
-| :--- | :--- | :--- |
-| `id` | yes | Your id for this event. **Resending the same id is a no-op**, so retries are safe. |
-| `kind` | yes | Lowercase `a-z 0-9 . _ -`. Stored as `custom.<kind>`. |
-| `at` | no | ISO 8601 with an offset. Defaults to when the request arrived. |
-| `subject` | no | Who or what the event is about: a service, a user, a job. |
-| `correlation` | no | Ties related events together, such as a commit SHA or a trace id. |
-| `attrs` | no | A **flat** object of strings, numbers, booleans or null. Nested objects are refused. |
+| Field         | Required | Meaning                                                                              |
+| :------------ | :------- | :----------------------------------------------------------------------------------- |
+| `id`          | yes      | Your id for this event. **Resending the same id is a no-op**, so retries are safe.   |
+| `kind`        | yes      | Lowercase `a-z 0-9 . _ -`. Stored as `custom.<kind>`.                                |
+| `at`          | no       | ISO 8601 with an offset. Defaults to when the request arrived.                       |
+| `subject`     | no       | Who or what the event is about: a service, a user, a job.                            |
+| `correlation` | no       | Ties related events together, such as a commit SHA or a trace id.                    |
+| `attrs`       | no       | A **flat** object of strings, numbers, booleans or null. Nested objects are refused. |
 
 The endpoint answers `200` for a verified delivery, even when the body is not a valid event. That
 way your queue does not retry a malformed event forever. Such an event is stored raw and not used.
@@ -50,11 +50,11 @@ A bad signature gets `401`.
 
 ### Kinds the detectors read today
 
-| `kind` | Read by | `attrs` that matter |
-| :--- | :--- | :--- |
-| `deployment` | `deploy-regression`, as the anchor | `production: true` (**required**, since absence does not mean production), `succeeded` (default true), `sha`, `name` |
-| `error` | `deploy-regression`, as an error signal | none |
-| `crash` | `deploy-regression`, as a crash signal | none |
+| `kind`       | Read by                                 | `attrs` that matter                                                                                                  |
+| :----------- | :-------------------------------------- | :------------------------------------------------------------------------------------------------------------------- |
+| `deployment` | `deploy-regression`, as the anchor      | `production: true` (**required**, since absence does not mean production), `succeeded` (default true), `sha`, `name` |
+| `error`      | `deploy-regression`, as an error signal | none                                                                                                                 |
+| `crash`      | `deploy-regression`, as a crash signal  | none                                                                                                                 |
 
 Any other kind is stored, and waits for a detector that reads it. If a deployment's `sha` matches a
 pull or merge request the GitHub or GitLab connector has seen (head or merge commit), the finding names
@@ -124,7 +124,7 @@ correct secret still gets `401`.
       -H "x-intelligence-signature: t=$t,v1=$sig" --data "$body"
 ```
 
-(If you already connect GitHub, naming the workflow in its *Deploy workflow names* setting does
+(If you already connect GitHub, naming the workflow in its _Deploy workflow names_ setting does
 the same thing without this step.)
 
 ---
@@ -139,31 +139,31 @@ from your `fields`, and the setup page from your `setup` steps.
 
 The existing connectors are the best reference:
 
-| Shape | Look at |
-| :--- | :--- |
-| Push, vendor-supplied secret, HMAC without timestamp | `src/connectors/sentry/` |
-| Push, secret we mint, timestamped HMAC | `src/connectors/intyga/`, `src/connectors/webhook/` |
-| Push, SHA-1 HMAC | `src/connectors/vercel/` |
-| Push, HMAC with rotation (several signatures) | `src/connectors/pagerduty/` |
-| Push, signed JWS (HS256) | `src/connectors/netlify/` |
-| Push, vendor cannot sign, shared-secret header | `src/connectors/opsgenie/`, `src/connectors/datadog/` |
-| Poll, paginated diffs + self-managed base URL | `src/connectors/gitlab/` |
-| Poll, unordered list, own cursor | `src/connectors/cloudflare/` |
-| Poll, paginated API with cursors | `src/connectors/github/` |
-| Poll, query API | `src/connectors/metrics/`, `src/connectors/fly/` |
+| Shape                                                | Look at                                               |
+| :--------------------------------------------------- | :---------------------------------------------------- |
+| Push, vendor-supplied secret, HMAC without timestamp | `src/connectors/sentry/`                              |
+| Push, secret we mint, timestamped HMAC               | `src/connectors/intyga/`, `src/connectors/webhook/`   |
+| Push, SHA-1 HMAC                                     | `src/connectors/vercel/`                              |
+| Push, HMAC with rotation (several signatures)        | `src/connectors/pagerduty/`                           |
+| Push, signed JWS (HS256)                             | `src/connectors/netlify/`                             |
+| Push, vendor cannot sign, shared-secret header       | `src/connectors/opsgenie/`, `src/connectors/datadog/` |
+| Poll, paginated diffs + self-managed base URL        | `src/connectors/gitlab/`                              |
+| Poll, unordered list, own cursor                     | `src/connectors/cloudflare/`                          |
+| Poll, paginated API with cursors                     | `src/connectors/github/`                              |
+| Poll, query API                                      | `src/connectors/metrics/`, `src/connectors/fly/`      |
 
 ### The shape everything becomes
 
 ```ts
 interface NormalizedEvent {
-  connectionId: string   // passed to you
-  source: string         // your connector's kind
-  sourceId: string       // unique per connection: the idempotency key
-  kind: string           // "<source>.<event>", e.g. "pagerduty.incident.triggered"
-  at: Date               // when it happened at the source
-  subjectRef: string | null      // who or what a finding would be about
-  correlationRef: string | null  // what ties it to other events (a commit SHA, a trace id)
-  attrs: Record<string, string | number | boolean | null>  // flat
+  connectionId: string // passed to you
+  source: string // your connector's kind
+  sourceId: string // unique per connection: the idempotency key
+  kind: string // "<source>.<event>", e.g. "pagerduty.incident.triggered"
+  at: Date // when it happened at the source
+  subjectRef: string | null // who or what a finding would be about
+  correlationRef: string | null // what ties it to other events (a commit SHA, a trace id)
+  attrs: Record<string, string | number | boolean | null> // flat
 }
 ```
 
@@ -181,10 +181,8 @@ export const exampleConnector: PushConnector = {
   mode: "push",
   label: "Example",
   blurb: "One line for the connector catalogue.",
-  generatesSecret: false,   // true: we mint the secret and show it once; false: the user pastes theirs
-  fields: [
-    { name: "secret", label: "Signing secret", required: true, secret: true },
-  ],
+  generatesSecret: false, // true: we mint the secret and show it once; false: the user pastes theirs
+  fields: [{ name: "secret", label: "Signing secret", required: true, secret: true }],
   setup: ["Where to find the secret.", "Where to paste the endpoint shown below."],
 
   verify: ({ headers, rawBody, secret }) => {
@@ -202,7 +200,7 @@ export const exampleConnector: PushConnector = {
 
   normalize: ({ connectionId, body, receivedAt }) => {
     const b = body as { id?: string; type?: string; service?: string; created_at?: string }
-    if (!b?.id || !b.type) return null   // not something we model: stored raw, not used
+    if (!b?.id || !b.type) return null // not something we model: stored raw, not used
     return {
       connectionId,
       source: "example",
@@ -234,14 +232,24 @@ export const examplePoller: PollConnector = {
       headers: { authorization: `Bearer ${ctx.secret}` },
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) { ctx.log("example poll failed", { status: res.status }); return [] }
+    if (!res.ok) {
+      ctx.log("example poll failed", { status: res.status })
+      return []
+    }
     const items = (await res.json()) as { id: string; at: string }[]
     let newest = since
     const out = items.map((i) => {
       if (i.at > newest) newest = i.at
-      return { connectionId: ctx.connectionId, source: "example-poll", sourceId: i.id,
-               kind: "example-poll.item", at: new Date(i.at), subjectRef: null,
-               correlationRef: null, attrs: {} }
+      return {
+        connectionId: ctx.connectionId,
+        source: "example-poll",
+        sourceId: i.id,
+        kind: "example-poll.item",
+        at: new Date(i.at),
+        subjectRef: null,
+        correlationRef: null,
+        attrs: {},
+      }
     })
     await ctx.setCursor("items", newest)
     return out
@@ -253,23 +261,23 @@ export const examplePoller: PollConnector = {
 
 These are the review criteria. Each one exists because breaking it caused a real problem.
 
-* **Verify over the raw bytes, in constant time.** `verify` gets the exact request body. Use
+- **Verify over the raw bytes, in constant time.** `verify` gets the exact request body. Use
   `timingSafeEqual`, and handle unequal lengths before calling it.
-* **Say what the vendor's scheme cannot do.** If it has no timestamp (Sentry), a captured delivery
+- **Say what the vendor's scheme cannot do.** If it has no timestamp (Sentry), a captured delivery
   replays forever and only `eventId` idempotency contains that. Write it in a comment.
-* **`sourceId` must be stable per event.** It is the idempotency key, and a random one turns every
+- **`sourceId` must be stable per event.** It is the idempotency key, and a random one turns every
   retry into a duplicate.
-* **Bound every poll.** Cap pages, items and requests per tick. A busy day must not turn one tick
+- **Bound every poll.** Cap pages, items and requests per tick. A busy day must not turn one tick
   into an outage.
-* **Advance a cursor only past what you return.** The caller stores the events you return. Moving
+- **Advance a cursor only past what you return.** The caller stores the events you return. Moving
   the cursor past anything else loses data after a crash.
-* **Return `[]` or `null` on a vendor error, don't throw.** One failing source must not stop the
+- **Return `[]` or `null` on a vendor error, don't throw.** One failing source must not stop the
   others, and a push endpoint that answers 5xx gets retried and then disabled by the vendor.
-* **Read-only credentials only.** Ask for the smallest read scopes, and say which in `fields.help`.
+- **Read-only credentials only.** Ask for the smallest read scopes, and say which in `fields.help`.
   Nothing here writes to your systems.
-* **Keep `attrs` flat and deliberate.** Everything in it is stored and shown. Leave out secrets,
+- **Keep `attrs` flat and deliberate.** Everything in it is stored and shown. Leave out secrets,
   tokens and personal data the detectors do not need.
-* **Test `verify` and `normalize` with no network**, next to the code as `*.test.ts`. The
+- **Test `verify` and `normalize` with no network**, next to the code as `*.test.ts`. The
   `sentry.test.ts` and `webhook.test.ts` files show the pattern: accept a correct signature, reject
   tampering, a wrong secret and malformed headers, and pin the normalized output.
 
@@ -287,9 +295,10 @@ switched off, and turning it on is a passkey-signed action, like every other sou
 ### Making a detector use it
 
 A connector only produces events. To have them raise findings, either:
-* emit a kind a detector already reads, prefixed with your own source name. That usually means
+
+- emit a kind a detector already reads, prefixed with your own source name. That usually means
   asking for the detector to accept it, as `deploy-regression` does for `custom.error`; or
-* add a detector: a pure function in `src/domain/detectors/`, an entry in
+- add a detector: a pure function in `src/domain/detectors/`, an entry in
   `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. The existing three are small
   and each is commented with what it does and does not claim.
 

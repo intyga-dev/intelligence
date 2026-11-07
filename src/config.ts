@@ -5,6 +5,8 @@
 // provider — see `judgment` below, where UNSET is a legitimate, documented configuration rather
 // than a misconfiguration.
 
+import { publicOrigin } from "./selfhost/setup.ts"
+
 const WEAK = new Set([
   "dev-tick-token-change-me",
   "dev-setup-token-change-me",
@@ -45,6 +47,13 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   isProdLike,
   port: num("PORT", 4100),
+  /** Canonical external origin when TLS terminates at a reverse proxy. */
+  get publicUrl(): string | null {
+    return process.env.PUBLIC_URL ? publicOrigin(process.env.PUBLIC_URL) : null
+  },
+  get intygaConsoleUrl(): string {
+    return publicOrigin(process.env.INTYGA_CONSOLE_URL ?? "https://app.intyga.com")
+  },
 
   /**
    * A getter, not a value.
@@ -61,23 +70,6 @@ export const config = {
   /** Bearer token for POST /internal/tick. Held by the scheduler, not by a person. */
   get tickToken(): string {
     return secret("TICK_TOKEN", "dev-tick-token-change-me")
-  },
-
-  /**
-   * Required to complete first-time setup from the browser (`POST /settings/bind`).
-   *
-   * Before a workspace is bound nobody exists who could approve anything, so the setup form cannot
-   * be gated by a passkey — and without some secret, whoever finds a freshly deployed instance first
-   * binds it to THEIR workspace and becomes its administrator. The operator holds this; a stranger
-   * does not.
-   *
-   * `null` in production when unset: browser setup is then disabled and `scripts/bind-workspace.ts`
-   * (which needs the database credential) is the only way in. A placeholder or short value throws,
-   * at the moment of use rather than at boot, because it stops mattering once setup is done.
-   */
-  get setupToken(): string | null {
-    if (isProdLike && !process.env.SETUP_TOKEN) return null
-    return secret("SETUP_TOKEN", "dev-setup-token-change-me")
   },
 
   /** Encrypts per-connection secrets at rest. */
@@ -119,27 +111,15 @@ export const config = {
     timeoutMs: num("TYPESAFE_TIMEOUT_MS", 10_000),
   },
 
-  /**
-   * Intyga as Intelligence's Relying Party — REQUIRED, not optional.
-   *
-   * Intelligence has no authentication of its own. Admins are Intyga PLATFORM_SUBJECTs who enrol a
-   * passkey on Intelligence's own origin, and every privileged action is a hash-only signing
-   * ceremony against that passkey. Unset means privileged actions are refused outright; it never
-   * means they are allowed.
-   *
-   * The credential is a PLATFORM-scoped key (subjects:write, credentials:write, receipts:create,
-   * receipts:read) authenticating by private_key_jwt. It acts only on Intelligence's own subjects
-   * and cannot approve, bypass or read anything in Intyga's own plane.
-   */
-  rp: {
-    baseUrl: process.env.INTYGA_RP_URL ?? null,
-    clientId: process.env.INTYGA_RP_CLIENT_ID ?? null,
-    /** PKCS#8 PEM. Newlines may be \n-escaped for environments that cannot carry them. */
-    privateKeyPem: (process.env.INTYGA_RP_PRIVATE_KEY ?? "").replace(/\\n/g, "\n") || null,
-    /** Our own WebAuthn RP ID and origin — the domain Intelligence is served from. */
-    rpId: process.env.INTYGA_RP_ID ?? null,
-    origin: process.env.INTYGA_RP_ORIGIN ?? null,
-    timeoutMs: num("INTYGA_RP_TIMEOUT_MS", 10_000),
+  /** Optional private route to the operator-configured public gateway. */
+  intyga: {
+    get baseUrl(): string | null {
+      return process.env.INTYGA_URL ?? null
+    },
+    get internalUrl(): string | null {
+      return process.env.INTYGA_INTERNAL_URL ?? null
+    },
+    timeoutMs: num("INTYGA_TIMEOUT_MS", 10_000),
   },
 
   github: {

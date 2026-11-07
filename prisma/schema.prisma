@@ -46,27 +46,7 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
-  // ─── Intyga Relying-Party binding ──────────────────────────────────────────────────────────────
-  // PER TENANT, deliberately, not one RP shared across the whole deployment.
-  //
-  // The binding points at the tenant's OWN Intyga workspace: their admins are platform subjects in
-  // their tenant, their approvals are Protected Ops on their plan, and the built-in connector
-  // observes the same workspace that authenticates them. That is what makes "you cannot use
-  // Intelligence without Intyga" a fact about the product rather than an implementation detail.
-  //
-  // Intyga permits this: PlatformRpConfig is @@unique([tenantId, rpId]), so many tenants may each
-  // register the same Intelligence domain as an RP, independently choosing to trust it.
-  //
-  // In V0 exactly one row exists — Intyga's own workspace watching itself — so the per-tenant and
-  // single-RP designs coincide. Modelling it per tenant now means that when they diverge, it is a
-  // configuration change rather than a migration.
-  intygaBaseUrl   String?
-  intygaClientId  String?
-  /// PKCS#8 PEM for the private_key_jwt key, encrypted at rest. Never selected into a response.
-  intygaKeyCipher String?
-  /// Our WebAuthn RP ID and the exact origin Intelligence is served from for this tenant.
-  intygaRpId      String?
-  intygaOrigin    String?
+  // INTYGA connection settings belong to deployment configuration, never this database.
 
   connections Connection[]
   events      Event[]
@@ -77,30 +57,48 @@ model Tenant {
   alertRules  AlertRule[]
   detectors   DetectorConfig[]
   cursors     DetectorCursor[]
+  services    Service[]
+}
+
+/// A system the team operates (for example API production or the billing worker).
+model Service {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @db.Uuid
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now())
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connections Connection[]
+  events      Event[]
+  findings    Finding[]
+
+  @@unique([tenantId, name])
 }
 
 /// An Intelligence admin.
 ///
-/// Intelligence has no password, no session secret and no identity provider of its own: a member IS
-/// an Intyga PLATFORM_SUBJECT. `externalId` is the opaque id Intyga knows them by, and signing in —
-/// like every privileged action here — is a passkey ceremony on Intelligence's own origin.
+/// Intelligence has no password and no identity provider of its own: a member IS an active member of
+/// the bound INTYGA workspace, signed in through INTYGA (OpenID Connect, passkey at the console).
+/// `externalId` is their email as the id_token names them; `role` is their workspace role at the
+/// last sign-in. Membership is managed in INTYGA, never here.
 ///
-/// That is why Intyga is a hard dependency rather than a connector: remove it and there is no way
+/// That is why INTYGA is a hard dependency rather than a connector: remove it and there is no way
 /// to authenticate anyone.
 model Member {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId   String    @db.Uuid
-  /// The identifier Intyga knows this person by. Opaque; not an email.
-  externalId String
-  label      String
-  /// Null until the first passkey is enrolled. A member cannot approve anything before then.
-  enrolledAt DateTime?
-  active     Boolean   @default(true)
-  createdAt  DateTime  @default(now())
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @db.Uuid
+  /// The person's email, lower-cased, as the INTYGA id_token names them.
+  externalId  String
+  label       String
+  /// ADMIN administers Intelligence; MEMBER reads it. Refreshed on every sign-in.
+  role        String    @default("MEMBER")
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  lastLoginAt DateTime?
 
-  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sessions Session[]
-  invites  MemberInvite[]
 
   @@unique([tenantId, externalId])
   @@index([tenantId, active])
@@ -117,6 +115,8 @@ model Connection {
   /// an unknown kind is an inert row rather than a failed deploy.
   kind     String
   label    String
+  serviceId String? @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
   /// Non-secret settings: repositories to watch, deploy workflow names, detector thresholds.
   config Json @default("{}")
@@ -138,6 +138,11 @@ model Connection {
   activatedAt       DateTime?
   /// The platform receipt that authorised the current state. Provenance for "who turned this on".
   activationReceipt String?
+
+  /// Poll health contains only safe status, never upstream error bodies, URLs or credentials.
+  lastPolledAt       DateTime?
+  lastPollSuccessAt  DateTime?
+  lastPollError      String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -178,6 +183,8 @@ model RawEvent {
 model Event {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId       String   @db.Uuid
+  serviceId      String?  @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   connectionId   String   @db.Uuid
   source         String
   sourceId       String
@@ -196,6 +203,7 @@ model Event {
   @@index([connectionId, subjectRef, kind, at])
   @@index([tenantId, kind, at])
   @@index([tenantId, at])
+  @@index([tenantId, serviceId, at])
   @@index([correlationRef])
 }
 
@@ -273,6 +281,8 @@ enum FindingStatus {
 model Finding {
   id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId   String        @db.Uuid
+  serviceId  String?       @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   category   Category
   severity   Severity
   title      String
@@ -295,6 +305,7 @@ model Finding {
   @@unique([tenantId, dedupeKey])
   @@index([tenantId, status, severity, lastSeenAt])
   @@index([tenantId, detectedAt])
+  @@index([tenantId, serviceId, status, lastSeenAt])
 }
 
 /// One piece of evidence. `kind: "assessment"` is the only model-sourced variant, and the domain
@@ -402,15 +413,18 @@ enum PendingActionStatus {
 /// approve one thing and execute another, which is the entire class of attack the signature exists
 /// to prevent.
 model PendingAction {
+  bindingId       String
   id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId        String              @db.Uuid
-  /// The Intyga signing-challenge nonce this action is bound to.
+  /// The INTYGA approval nonce this action is bound to.
   nonce           String              @unique
   action          String
-  /// Frozen at challenge time. What gets executed, and what the digest was computed over.
+  /// Frozen when the approval is opened. What gets executed, and what the receipt is verified against.
   params          Json
-  /// The digest handed to Intyga. Recomputed and compared on completion.
-  payloadHash     String
+  /// The execution target bound into the signed payload: this instance.
+  target          String
+  /// Where the approver signs — the console's /approve page for this nonce.
+  approveUrl      String
   actorExternalId String
   status          PendingActionStatus @default(AWAITING_SIGNATURE)
   receiptSeq      Int?
@@ -510,6 +524,7 @@ model DetectorCursor {
 /// able to do after a laptop goes missing. The cookie carries a random token; only its SHA-256 is
 /// stored, so a database read does not yield usable sessions.
 model Session {
+  bindingId    String
   id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId     String    @db.Uuid
   memberId     String    @db.Uuid
@@ -519,61 +534,11 @@ model Session {
   lastSeenAt   DateTime  @default(now())
   expiresAt    DateTime
   revokedAt    DateTime?
-  /// The platform receipt nonce that proved this login. Provenance for "who signed in, and when".
-  receiptNonce String?
+  /// The one-use approval that granted this browser access, or null for OIDC sign-in.
+  receiptNonce String?   @unique
 
   member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
 
   @@index([memberId, expiresAt])
-  @@index([expiresAt])
-}
-
-/// A login or enrolment ceremony in flight.
-///
-/// Separate from PendingAction: that models an approved CHANGE, this models proving WHO you are.
-/// Conflating them would mean a login could be redeemed as an action.
-model AuthCeremony {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId    String    @db.Uuid
-  kind        String // "login" | "enrol"
-  externalId  String
-  /// The signing-challenge nonce (login) — null for an enrolment, which has no nonce of its own.
-  nonce       String?   @unique
-  payloadHash String?
-  /// The invite this enrolment redeems. Set for every enrolment, null for a login.
-  inviteId    String?   @db.Uuid
-  createdAt   DateTime  @default(now())
-  expiresAt   DateTime
-  consumedAt  DateTime?
-
-  @@index([tenantId, kind])
-  @@index([inviteId])
-  @@index([expiresAt])
-}
-
-/// A one-time right to bind a passkey to one member.
-///
-/// This is what makes enrolment safe. The member's externalId is not a secret — it is typed into the
-/// login form and shown on /members — so "a member with this id exists" can never be the check that
-/// decides who may bind a credential to it: anyone could enrol their own key as "admin" and then
-/// sign in and approve changes as them. The identity being enrolled is derived from this row, which
-/// only an existing administrator (a signed action) or the operator (a CLI with database access)
-/// can create. Proof of possession of the new key proves nothing about who is holding it.
-///
-/// Only the SHA-256 of the token is stored, as with sessions: a read of this table must not yield a
-/// usable invite.
-model MemberInvite {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId   String    @db.Uuid
-  memberId   String    @db.Uuid
-  tokenHash  String    @unique
-  createdAt  DateTime  @default(now())
-  expiresAt  DateTime
-  /// Set when a passkey was bound with it, or when a newer invite for the same member superseded it.
-  consumedAt DateTime?
-
-  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
-
-  @@index([memberId, consumedAt])
   @@index([expiresAt])
 }

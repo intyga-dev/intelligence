@@ -8,6 +8,31 @@ const D = new Date("2026-09-23T12:00:00Z").getTime()
 const min = (m: number) => new Date(D + m * 60_000)
 const generic = () => PATH_MAPS.generic
 
+test("deploy regressions use signals and history from the same service", () => {
+  const d = deploy()
+  d.event.serviceId = "api"
+  const spike = [
+    ...baseline("sentry", "sentry.error", 60),
+    ...Array.from({ length: 8 }, (_, i) => ev("sentry", "sentry.error", min(i + 1))),
+  ]
+  const input = { tenantId: "t", deploys: [d], changes: [], mapFor: generic, now: min(40) }
+  assert.equal(
+    detectDeployRegressions({ ...input, signals: spike.map((e) => ({ ...e, serviceId: "worker" })) }).length,
+    0,
+  )
+  assert.equal(
+    detectDeployRegressions({ ...input, signals: spike }).length,
+    0,
+    "unassigned signals do not mix with a named service",
+  )
+  const findings = detectDeployRegressions({
+    ...input,
+    signals: spike.map((e) => ({ ...e, serviceId: "api" })),
+  })
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0]?.serviceId, "api")
+})
+
 let seq = 0
 function ev(source: string, kind: string, at: Date, attrs: NormalizedEvent["attrs"] = {}): NormalizedEvent {
   seq++

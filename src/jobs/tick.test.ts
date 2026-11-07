@@ -121,3 +121,73 @@ test("a switched-off detector does not run, and does not replay when switched ba
   await runDetectors(new Date())
   assert.equal((await sensitive()).length, 1, "and it watches again from now")
 })
+
+test("metrics health runs once per arrival and respects the signed detector switch", { skip }, async () => {
+  const { tenant, gh } = await setup()
+  const metric = "intyga_audit_write_failures_total"
+  const now = new Date()
+  const push = (value: number, offset: number) =>
+    prisma.event.create({
+      data: {
+        tenantId: tenant.id,
+        connectionId: gh.id,
+        source: "metrics",
+        sourceId: `metric-${value}`,
+        kind: "metrics.sample",
+        subjectRef: metric,
+        at: new Date(now.getTime() + offset),
+        createdAt: new Date(now.getTime() + offset),
+        attrs: { metric, query: metric, value },
+      },
+    })
+  await push(100, -120_000)
+  await push(105, -60_000)
+  const report = await runDetectors(now)
+  assert.deepEqual(report.detectors["metrics-health"], { found: 1, created: 1 })
+  await runDetectors(new Date(now.getTime() + 1000))
+  assert.equal((await prisma.finding.findFirstOrThrow()).count, 1)
+  await prisma.detectorConfig.create({
+    data: { tenantId: tenant.id, detector: "metrics-health", enabled: false },
+  })
+  await push(110, 2000)
+  await runDetectors(new Date(now.getTime() + 3000))
+  await prisma.detectorConfig.update({
+    where: { tenantId_detector: { tenantId: tenant.id, detector: "metrics-health" } },
+    data: { enabled: true },
+  })
+  await runDetectors(new Date(now.getTime() + 4000))
+  assert.equal((await prisma.finding.findFirstOrThrow()).count, 1)
+})
+
+test("poll request failures are visible, safe to display and cleared on recovery", { skip }, async (t) => {
+  const { tenant } = await setup()
+  const connection = await prisma.connection.create({
+    data: {
+      tenantId: tenant.id,
+      kind: "metrics",
+      label: "Metrics",
+      active: true,
+      config: { baseUrl: "https://metrics.example", queries: "up" },
+    },
+  })
+  const fetch = t.mock.method(
+    globalThis,
+    "fetch",
+    async () => new Response("sensitive-upstream-error", { status: 503 }),
+  )
+  const failed = await runDetectors()
+  assert.deepEqual(failed.polled.Metrics, { error: true })
+  let row = await prisma.connection.findUniqueOrThrow({ where: { id: connection.id } })
+  assert.ok(row.lastPolledAt)
+  assert.ok(row.lastPollError)
+  assert.equal(row.lastPollSuccessAt, null)
+  assert.doesNotMatch(row.lastPollError, /sensitive-upstream-error/)
+  fetch.mock.mockImplementation(
+    async () =>
+      new Response(JSON.stringify({ status: "success", data: { resultType: "vector", result: [] } })),
+  )
+  await runDetectors()
+  row = await prisma.connection.findUniqueOrThrow({ where: { id: connection.id } })
+  assert.equal(row.lastPollError, null)
+  assert.ok(row.lastPollSuccessAt)
+})

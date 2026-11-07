@@ -40,9 +40,12 @@ interface PromResult {
   }
 }
 
-function queries(ctx: ConnectorContext): string[] {
-  return String(ctx.config.queries || DEFAULT_QUERIES)
-    .split(/[\n,]+/)
+export function metricQueries(value: string): string[] {
+  // Keep commas inside PromQL label selectors and function calls intact. Older configurations
+  // used comma-separated bare metric names, which remain supported without splitting PromQL.
+  const input = value.trim() || DEFAULT_QUERIES
+  return input
+    .split(/^[\w:\s,]+$/.test(input) ? /[\n,]+/ : /\r?\n/)
     .map((q) => q.trim())
     .filter(Boolean)
     .slice(0, MAX_QUERIES)
@@ -67,7 +70,7 @@ export const metricsConnector: PollConnector = {
       name: "queries",
       label: "Queries",
       placeholder: DEFAULT_QUERIES,
-      help: "PromQL expressions or bare metric names, comma separated. Leave blank for the Intyga defaults.",
+      help: "One PromQL expression per line. Bare metric names can also be comma separated. Leave blank for the Intyga defaults.",
     },
     {
       name: "token",
@@ -92,7 +95,7 @@ export const metricsConnector: PollConnector = {
     // like it moved when only the clock did.
     const bucket = new Date(Math.floor(Date.now() / 60_000) * 60_000)
 
-    for (const q of queries(ctx)) {
+    for (const q of metricQueries(String(ctx.config.queries ?? ""))) {
       const ac = new AbortController()
       const timer = setTimeout(() => ac.abort(), TIMEOUT_MS)
       try {
@@ -105,7 +108,14 @@ export const metricsConnector: PollConnector = {
           continue
         }
         const body = (await res.json()) as PromResult
-        if (body.status !== "success" || !body.data) continue
+        if (
+          body.status !== "success" ||
+          body.data?.resultType !== "vector" ||
+          !Array.isArray(body.data.result)
+        ) {
+          ctx.log("metrics query returned an unsupported response", { query: q })
+          continue
+        }
 
         for (const series of body.data.result) {
           const value = Number(series.value[1])

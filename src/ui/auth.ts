@@ -1,208 +1,169 @@
+import { EMBEDDED_BROWSER_JS } from "../embedded/browser.ts"
 import { authPage, esc } from "./layout.ts"
 
-// Sign-in and passkey enrolment.
-//
-// Rendered on the onboarding shell (no navigation): showing a nav to someone who is not signed in
-// advertises the shape of the console and invites them to try each route.
-
-/** Shared base64url helpers — WebAuthn speaks ArrayBuffers, JSON does not. */
-const B64 = `
-function b64urlToBuf(s) {
-  if (typeof s !== "string") return new Uint8Array();
-  const p = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=");
-  return Uint8Array.from(atob(p), (c) => c.charCodeAt(0));
-}
-function bufToB64url(b) {
-  return btoa(String.fromCharCode(...new Uint8Array(b)))
-    .replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
-}
-function unwrapOptions(obj) {
-  let cur = obj;
-  while (cur && (cur.publicKey || cur.options)) {
-    cur = cur.publicKey || cur.options;
-  }
-  return cur || {};
-}
-`
-
-export function loginPage(o: { error?: string; prefill?: string } = {}): string {
+export function loginPage(
+  o: {
+    error?: string
+    prefill?: string
+    consoleUrl?: string
+    oidcEnabled?: boolean
+    embeddedEnabled?: boolean
+    setupPending?: boolean
+  } = {},
+): string {
+  if (o.embeddedEnabled) return embeddedLoginPage(o)
   return authPage({
-    title: "Sign in",
-    lede: "No password — the passkey you approve production actions with.",
+    title: "Sign in to Intelligence",
+    lede: "Request access, then approve it with INTYGA.",
     ...(o.error ? { error: o.error } : {}),
-    footnote: "No passkey yet? An administrator adds you first, then sends you an enrolment link.",
+    footnote:
+      "Approval sign-in grants this browser administrator access for 12 hours under your workspace's approval rules. Every privileged change still needs its own approval.",
     body: `
-<form id="login-form">
+<button class="primary" type="button" id="approval-login">Request sign-in approval</button>
+<p id="approval-status" class="mut" role="status" aria-live="polite"></p>
+<p id="approval-details" hidden>Check that the approval names this Intelligence instance and browser code
+  <strong id="browser-code"></strong>. <a id="approval-link" target="_blank" rel="noopener noreferrer">Open approval ↗</a></p>
+${
+  o.oidcEnabled
+    ? `
+<hr style="margin:24px 0">
+<p>Or sign in with your workspace identity and role:</p>
+<form method="post" action="/login/begin">
   <div class="field">
-    <label>INTYGA subject id</label>
-    <input name="externalId" id="externalId" required autocomplete="username webauthn"
-           autofocus placeholder="ada" value="${esc(o.prefill ?? "")}">
+    <label for="email">Your INTYGA email</label>
+    <input name="email" id="email" type="email" required autocomplete="email"
+           placeholder="ada@example.com" value="${esc(o.prefill ?? "")}">
   </div>
-  <button class="primary" type="submit" id="go">Sign in with passkey</button>
-  <span id="msg" class="authMsg"></span>
-</form>
-
-<script>
-${B64}
-const form = document.getElementById("login-form");
-const msg = document.getElementById("msg");
-const go = document.getElementById("go");
-
-function fail(text) {
-  msg.textContent = text;
-  msg.style.color = "var(--red)";
-  go.disabled = false;
-  go.textContent = "Sign in with passkey";
+  <button type="submit">Sign in with INTYGA (OIDC)</button>
+</form>`
+    : ""
 }
-
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  go.disabled = true;
-  go.textContent = "Starting…";
-  msg.textContent = "";
-  msg.style.color = "";
-  const externalId = document.getElementById("externalId").value.trim();
+<script>
+const button = document.getElementById("approval-login");
+const status = document.getElementById("approval-status");
+let timer;
+button.addEventListener("click", async () => {
+  button.disabled = true;
+  clearTimeout(timer);
+  document.getElementById("approval-details").hidden = true;
+  status.textContent = "Requesting approval…";
+  // Open during the click gesture, then isolate the popup before navigating to the console.
+  const popup = window.open("about:blank", "_blank", "popup,width=520,height=760");
+  if (popup) popup.opener = null;
   try {
-    const begin = await fetch("/login/begin", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ externalId }),
+    const response = await fetch("/login/approval/begin", {
+      method: "POST", headers: { "x-intelligence-login": "1" }
     });
-    const b = await begin.json();
-    if (!begin.ok) throw new Error(b.error || "could not start sign-in");
-
-    go.textContent = "Waiting for your passkey…";
-    const o = unwrapOptions(b.options);
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        ...o,
-        challenge: b64urlToBuf(o.challenge),
-        allowCredentials: (o.allowCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
-      },
-    });
-
-    const done = await fetch("/login/complete", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        nonce: b.nonce,
-        assertion: {
-          id: assertion.id, rawId: bufToB64url(assertion.rawId), type: assertion.type,
-          response: {
-            clientDataJSON: bufToB64url(assertion.response.clientDataJSON),
-            authenticatorData: bufToB64url(assertion.response.authenticatorData),
-            signature: bufToB64url(assertion.response.signature),
-            userHandle: assertion.response.userHandle ? bufToB64url(assertion.response.userHandle) : null,
-          },
-        },
-      }),
-    });
-    const d = await done.json();
-    if (!done.ok) throw new Error(d.error || "sign-in refused");
-    go.textContent = "Signed in";
-    location.href = "/";
-  } catch (err) {
-    // A cancelled or timed-out passkey prompt throws NotAllowedError, which reads as a scary
-    // browser string. Say what actually happened.
-    fail(err && err.name === "NotAllowedError" ? "Passkey prompt dismissed." : (err.message || String(err)));
+    const opened = await response.json();
+    if (!response.ok) throw new Error(opened.error || "Could not request approval.");
+    document.getElementById("browser-code").textContent = opened.browserCode;
+    document.getElementById("approval-link").href = opened.approveUrl;
+    document.getElementById("approval-details").hidden = false;
+    if (popup) popup.location = opened.approveUrl;
+    status.textContent = "Waiting for approval. Keep this page open.";
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const poll = async () => {
+      try {
+        if (Date.now() >= deadline) throw new Error("The sign-in expired. Start again.");
+        const response = await fetch("/login/approval/status", { cache: "no-store" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Sign-in was refused.");
+        if (result.status === "approved") {
+          if (popup && !popup.closed) popup.close();
+          window.location.assign("/");
+          return;
+        }
+        timer = setTimeout(poll, 1500);
+      } catch (error) {
+        status.textContent = error.message || "Could not check approval. Start again.";
+        button.disabled = false;
+      }
+    };
+    timer = setTimeout(poll, 1500);
+  } catch (error) {
+    if (popup && !popup.closed) popup.close();
+    status.textContent = error.message || "Could not request approval.";
+    button.disabled = false;
   }
 });
 </script>`,
   })
 }
 
-/**
- * Passkey enrolment, from an administrator's one-time link.
- *
- * Takes no parameters. The invite is in the URL fragment (`#invite=…`), which the browser never
- * sends to the server; this page reads it and posts it in a request body. Who is being enrolled is
- * decided server-side from the invite and shown here only once the ceremony has begun.
- */
-export function enrolPage(): string {
+function embeddedLoginPage(o: { error?: string; setupPending?: boolean }) {
   return authPage({
-    title: "Enrol a passkey",
-    lede: "One passkey on this domain. It signs you in here and approves changes.",
+    title: o.setupPending ? "Set up your Intelligence passkey" : "Sign in to Intelligence",
+    lede: o.setupPending
+      ? "Your application is configured. Verify its ownership in INTYGA, then link your membership here."
+      : "Use your application passkey, linked to your INTYGA workspace membership.",
+    ...(o.error ? { error: o.error } : {}),
     footnote:
-      "This credential is registered against Intelligence's own Relying Party — it cannot approve anything in INTYGA itself.",
+      "Your workspace role controls access. Protected changes still require approval under your workspace’s rules.",
     body: `
-<div class="field">
-  <label>Enrolling</label>
-  <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:9px 11px">
-    <code id="who">from your enrolment link</code>
-  </div>
-</div>
-<button class="primary" id="go">Enrol passkey</button>
-<span id="msg" class="authMsg"></span>
-
+<button class="primary" id="embedded-login" ${o.setupPending ? "disabled hidden" : ""}>Sign in with passkey</button>
+<p id="embedded-status" role="status" aria-live="polite"></p>
+<p id="share-approval" hidden>Need another approver? Share this application approval link: <input id="share-approval-url" readonly aria-label="Approval link"></p>
+<p>First time on this application? Link your membership once, then create an application passkey.</p>
+<button id="embedded-link" ${o.setupPending ? 'class="primary"' : ""}>Link my INTYGA membership</button>
+${o.setupPending ? "<p>After creating your passkey, export the application trust anchor from INTYGA Member applications and install it on this server to enable sign-in.</p>" : ""}
 <script>
-${B64}
-const go = document.getElementById("go");
-const msg = document.getElementById("msg");
-const invite = new URLSearchParams(location.hash.slice(1)).get("invite") || "";
-let externalId = "";
-// Drop the token from the address bar and history now that it is held in memory.
-if (invite) history.replaceState(null, "", location.pathname);
-
-function fail(text) {
-  msg.textContent = text;
-  msg.style.color = "var(--red)";
-  go.disabled = false;
-  go.textContent = "Enrol passkey";
-}
-
-if (!invite) {
-  go.disabled = true;
-  msg.textContent = "Open the enrolment link an administrator sent you. This page does nothing without one.";
-  msg.style.color = "var(--red)";
-}
-
-go.addEventListener("click", async () => {
-  go.disabled = true;
-  go.textContent = "Starting…";
-  msg.textContent = "";
-  msg.style.color = "";
-  try {
-    const begin = await fetch("/members/enrol/begin", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ invite }),
-    });
-    const b = await begin.json();
-    if (!begin.ok) throw new Error(b.error || "could not start enrolment");
-    externalId = b.externalId;
-    document.getElementById("who").textContent = b.label + " (" + b.externalId + ")";
-
-    go.textContent = "Follow your device's prompt…";
-    const o = unwrapOptions(b.options);
-    const cred = await navigator.credentials.create({
-      publicKey: {
-        ...o,
-        challenge: b64urlToBuf(o.challenge),
-        user: { ...(o.user || {}), id: b64urlToBuf(o.user && o.user.id) },
-        excludeCredentials: (o.excludeCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
-      },
-    });
-
-    const done = await fetch("/members/enrol/complete", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        invite,
-        response: {
-          id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
-          response: {
-            clientDataJSON: bufToB64url(cred.response.clientDataJSON),
-            attestationObject: bufToB64url(cred.response.attestationObject),
-          },
-        },
-      }),
-    });
-    const d = await done.json();
-    if (!done.ok) throw new Error(d.error || "enrolment refused");
-    go.textContent = "Enrolled";
-    msg.textContent = "Taking you to sign in…";
-    msg.style.color = "var(--green)";
-    setTimeout(() => (location.href = "/login?id=" + encodeURIComponent(externalId)), 900);
-  } catch (err) {
-    fail(err && err.name === "NotAllowedError" ? "Passkey prompt dismissed." : (err.message || String(err)));
-  }
-});
+${EMBEDDED_BROWSER_JS}
+const statusEl=document.getElementById('embedded-status');
+const login=document.getElementById('embedded-login');
+login.onclick=async()=>{
+ login.disabled=true;
+ try {
+  statusEl.textContent='Preparing sign-in…';
+  const opened=await embeddedPost('/login/approval/begin',{});
+  if(opened.embeddedApprovalUrl){document.getElementById('share-approval-url').value=opened.embeddedApprovalUrl;document.getElementById('share-approval').hidden=false;}
+  await signEmbedded('/login/approval/embedded/options','/login/approval/embedded/verify',{});
+  statusEl.textContent='Passkey accepted. Waiting for the workspace approval quorum…';
+  const end=Date.now()+10*60*1000;
+  const poll=async()=>{try{if(Date.now()>=end)throw new Error('Sign-in expired. Start again.');const res=await fetch('/login/approval/status',{cache:'no-store'});const body=await res.json();if(!res.ok)throw new Error(body.error||'Sign-in refused.');if(body.status==='approved'){location.assign('/');return;}setTimeout(poll,1500);}catch(e){statusEl.textContent=e.message;login.disabled=false;}};
+  await poll();
+ }catch(e){statusEl.textContent=e.message||'Passkey sign-in cancelled.';login.disabled=false;}
+};
+document.getElementById('embedded-link').onclick=async()=>{try{const result=await embeddedPost('/embedded/link/start',{});location.assign(result.url);}catch(e){statusEl.textContent=e.message;}};
 </script>`,
+  })
+}
+
+export function embeddedLinkPage() {
+  return authPage({
+    title: "Create your Intelligence passkey",
+    lede: "Your INTYGA membership is linked. Create a passkey for this application.",
+    footnote:
+      "The application passkey cannot sign in to the INTYGA console. An administrator must export a fresh application trust anchor before its first use.",
+    body: `
+<button class="primary" id="create-passkey">Create application passkey</button><p id="link-status" role="status"></p><a href="/login">Return to sign-in</a>
+<script>
+${EMBEDDED_BROWSER_JS}
+const grant=new URLSearchParams(location.hash.slice(1));
+history.replaceState(null,'',location.pathname);
+const body={token:grant.get('token'),state:grant.get('state')};
+const button=document.getElementById('create-passkey');
+button.onclick=async()=>{button.disabled=true;try{const opened=await embeddedPost('/embedded/link/options',body);const response=await embeddedPasskey(opened.options,true);await embeddedPost('/embedded/link/verify',{...body,response});document.getElementById('link-status').textContent='Passkey created. Ask your administrator to mount a fresh application trust anchor, then sign in.';}catch(e){document.getElementById('link-status').textContent=e.message||'Registration cancelled.';button.disabled=false;}};
+</script>`,
+  })
+}
+
+export function embeddedApprovalPage() {
+  return authPage({
+    title: "Review an Intelligence approval",
+    lede: "Read the exact request before using your application passkey.",
+    body: `
+<pre id="request-details"></pre><p id="request-status" role="status"></p><button id="approve-request" class="primary" disabled>Approve with passkey</button>
+<script>
+${EMBEDDED_BROWSER_JS}
+const ticket=new URLSearchParams(location.hash.slice(1)).get('ticket');
+history.replaceState(null,'',location.pathname);
+const statusEl=document.getElementById('request-status');
+const button=document.getElementById('approve-request');
+let options;
+(async()=>{try{const opened=await embeddedPost('/embedded/approve/options',{ticket});document.getElementById('request-details').textContent=opened.description+'\n'+opened.actionType+'\n'+JSON.stringify(opened.params,null,2)+'\nRequired approvals: '+opened.requiredApprovals;options=opened.options;button.disabled=false;}catch(e){statusEl.textContent=e.message;}})();
+button.onclick=async()=>{button.disabled=true;try{const response=await embeddedPasskey(options,false);await embeddedPost('/embedded/approve/verify',{ticket,response});statusEl.textContent='Approval recorded. The requesting browser will apply it once quorum is complete.';}catch(e){statusEl.textContent=e.message||'Approval cancelled.';button.disabled=false;}};
+</script>`,
+    footnote:
+      "This link lets you review one request. Approval still requires an eligible active workspace member’s application passkey.",
   })
 }

@@ -32,7 +32,7 @@ CI runs exactly this. There is no separate set of checks to discover after revie
 
 ## What a good change looks like here
 
-**Match the comment style.** This codebase explains *why*, at length, where the reasoning is not
+**Match the comment style.** This codebase explains _why_, at length, where the reasoning is not
 recoverable from the code. Several comments exist specifically because an earlier, more obvious
 version was wrong — the bare-identifier boundary check that fired on documentation, the eager
 config getter that threw on import, the 2xx on a failed normalize. If your change reverses a
@@ -42,9 +42,10 @@ decision like that, say so in the comment. If it adds one, write down what you t
 database and no Fastify instance — `src/domain/`, `src/gate/` and `src/redaction/` are all testable
 as pure functions, and that is not an accident. Inject a clock rather than sleeping.
 
-The exceptions are `src/server/setup-and-enrol.test.ts`, which drives first-time setup and passkey
-enrolment through the real routes — the two paths where nobody can be asked for a passkey yet — and
-`src/alerts/delivery.test.ts`, which delivers alerts to a real local HTTP receiver. They need `TEST_DATABASE_URL` pointing at a database whose name contains `test` (they truncate every
+The exceptions are `src/server/setup-and-sign-in.test.ts`, which drives first-time setup, the
+INTYGA sign-in hand-off and the action API through the real routes — the paths where nobody is
+signed in yet — and `src/alerts/delivery.test.ts`, which delivers alerts to a real local HTTP
+receiver. They need `TEST_DATABASE_URL` pointing at a database whose name contains `test` (they truncate every
 table), and skip without it. Test files run one at a time for that reason. CI always sets it. To run it locally:
 
 ```bash
