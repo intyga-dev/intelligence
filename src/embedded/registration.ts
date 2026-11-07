@@ -39,5 +39,5 @@ export function registrationProof(env: NodeJS.ProcessEnv = process.env, now = ne
 export const intelligenceMarker = {
   product: "intyga-intelligence",
   markerVersion: 1,
-  version: "0.1.0",
+  version: "1.0.0",
 } as const

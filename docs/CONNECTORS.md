@@ -1,4 +1,8 @@
-# Connecting your own sources
+# INTYGA Intelligence 1.0 connectors
+
+Version 1.0.0 includes 21 connectors. This guide covers custom events, connector development and
+[native provider setup](#native-provider-integrations). The [README catalogue](../README.md#supported-connectors)
+lists all sources; each integration has a defined collection scope and needs live-account validation.
 
 There are two ways to get events from a system Intelligence does not ship a connector for:
 
@@ -7,8 +11,8 @@ There are two ways to get events from a system Intelligence does not ship a conn
 2. **Write a connector.** One TypeScript file plus one registration line. Do this when you want to
    poll an API, or verify a vendor's own webhook signature without a relay in between.
 
-Either way, everything becomes the same `NormalizedEvent`, and detectors never learn which source
-an event came from.
+Either way, everything becomes a `NormalizedEvent`. Detectors consume normalized event kinds and
+attributes rather than vendor API responses.
 
 ---
 
@@ -342,8 +346,10 @@ These are the review criteria. Each one exists because breaking it caused a real
   into an outage.
 - **Advance a cursor only past what you return.** The caller stores the events you return. Moving
   the cursor past anything else loses data after a crash.
-- **Return `[]` or `null` on a vendor error, don't throw.** One failing source must not stop the
-  others, and a push endpoint that answers 5xx gets retried and then disabled by the vendor.
+- **Report polling failures through `ctx.log`.** It marks the poll unhealthy; it is not a debug
+  logger. Return the events safely collected so far, or `[]` if there are none. An empty successful
+  poll is healthy, so silently returning `[]` on a vendor error hides the failure. Push signature
+  failures return `{ ok: false, reason }`; unsupported event shapes normalize to `null`.
 - **Read-only credentials only.** Ask for the smallest read scopes, and say which in `fields.help`.
   Nothing here writes to your systems.
 - **Keep `attrs` flat and deliberate.** Everything in it is stored and shown. Leave out secrets,
@@ -370,7 +376,7 @@ A connector only produces events. To have them raise findings, either:
 - emit a kind a detector already reads, prefixed with your own source name. That usually means
   asking for the detector to accept it, as `deploy-regression` does for `custom.error`; or
 - add a detector: a pure function in `src/domain/detectors/`, an entry in
-  `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. The existing three are small
+  `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. The existing detectors are small
   and each is commented with what it does and does not claim.
 
 A pull request adding a connector for a common service is welcome. Open an issue first if it needs

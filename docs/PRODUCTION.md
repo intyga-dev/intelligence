@@ -1,4 +1,4 @@
-# Running Intelligence in production
+# Running INTYGA Intelligence 1.0 in production
 
 A step-by-step guide for self-hosting. Each step ends with **Done when**, a check you can run. Do
 them in order: later steps assume earlier ones.
@@ -27,12 +27,12 @@ depend on it.
 | :---------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It fixes the embedded application origin/RP ID and approval target. Moving hosts requires a new registration and app-scoped passkeys. Optional OIDC also requires its callback registration to change.                                                             |
 | **`SECRETS_ENC_KEY`**                                                         | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and temporary browser state. The INTYGA service key stays in deployment secrets. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
-| **Single instance**                                                           | Rate limits and the tick guard are in-process. Run exactly one container. Two replicas would double the allowances; correctness holds, but the guards weaken.                                                                                                      |
+| **Single instance**                                                           | Run one app container and one scheduler. Rate limits and the tick overlap guard are in-process; replicas do not share them and can run concurrent ticks.                                                                                                           |
 
 ## 1. Prerequisites
 
-- An **INTYGA workspace**, with an administrator who can use **Integrations → App sign-in** and create API keys.
-  Your INTYGA deployment must support member applications, SERVICE keys and application trust-anchor exports. OIDC App sign-in is optional.
+- An **INTYGA workspace**, with an administrator who can use **Integrations → Member applications** and create API keys.
+  Your INTYGA deployment must support member applications, SERVICE keys and application trust-anchor exports and application-specific approval routing (`POST /embedded/applications/:applicationId/authorize`). OIDC App sign-in is optional.
 - A **Postgres** database for Intelligence alone, never INTYGA's database. The project is developed and
   tested against Postgres 16.
 - A place to run one container (Fly.io, Cloud Run with `--max-instances=1`, a VM, Kubernetes with
@@ -42,11 +42,15 @@ depend on it.
 
 **Done when:** you can reach an empty Postgres from where the container will run.
 
-## 2. INTYGA side — register the embedded application
+## 2. INTYGA side — register or reuse a Member application
 
-Create a SERVICE identity and API key, and configure its ordinary workspace approval rules.
-Register Intelligence under **Integrations → Member applications** with its exact HTTPS origin
-and that service client ID. The RP ID is the origin hostname; it cannot overlap the console’s
+Use an existing SERVICE identity and API key, or create them, and configure the workspace approval
+rules for that service. Open **Integrations → Member applications** (`/embedded`) in the INTYGA
+console. Reuse an active, verified registration if its origin and SERVICE client ID already match
+this Intelligence deployment; otherwise register one with those exact values.
+
+This guide uses Member applications for in-page passkeys. Customer applications (`/platform`) and
+OIDC App sign-in (`/oidc-clients`) are separate features and do not provide this application ID. The RP ID is the origin hostname; it cannot overlap the console’s
 passkey scope. Save the returned application ID and short-lived ownership proof.
 
 Only active human workspace members can link application credentials. External platform subjects
@@ -57,9 +61,9 @@ cannot use this path. Template recognition is advisory and grants no authority.
 ## 3. Configure the environment
 
 Copy [`.env.production.example`](../.env.production.example) into your secret store and fill it in.
-Generate each secret with `openssl rand -base64 32`. The server **refuses to start** when
-`DATABASE_URL`, `TICK_TOKEN` or `SECRETS_ENC_KEY` is missing or a placeholder, so a bad config fails at
-deploy instead of later.
+Generate `TICK_TOKEN` and `SECRETS_ENC_KEY` separately with `openssl rand -base64 32`; obtain the
+SERVICE credentials from INTYGA. The server **refuses to start** when `DATABASE_URL` is missing or
+either local secret is missing, too short or a known placeholder in production.
 
 Set `PUBLIC_URL`, `INTYGA_URL`, `INTYGA_CONSOLE_URL`, `INTYGA_WORKSPACE_ID`, the SERVICE client ID
 and secret, and `INTYGA_EMBEDDED_APPLICATION_ID`. Mount `config/` read-only and set
@@ -114,15 +118,15 @@ succeeds, and a protected change is approved in place and applied. MEMBERs can r
 
 ## 7. Schedule the tick
 
-Detection, polling and alert delivery run on `POST /internal/tick`, driven from outside so a restart
-never skips a window:
+Detection, polling and alert delivery run on `POST /internal/tick`. An external scheduler keeps
+requesting ticks after app restarts; outages can still delay collection or exceed detector windows:
 
 ```bash
 curl -X POST https://<hostname>/internal/tick -H "Authorization: Bearer $TICK_TOKEN"
 ```
 
-Schedule that **once a minute**. The endpoint allows 6 calls a minute, so a duplicate delivery is
-harmless and a stampede is refused.
+Schedule that **once a minute**. The endpoint allows 6 calls a minute and prevents overlapping
+ticks within one app process. Monitor failed scheduler deliveries and avoid multiple schedulers.
 
 **Done when:** the tick returns 200 with a `detectors` and `alerts` report, and it keeps doing so.
 
@@ -132,15 +136,25 @@ Everything here happens in the console, and every activation is a passkey-signed
 
 - **Connectors:** add each source, copy its endpoint and secret into the source, then **Turn on**.
   For sources Intelligence has no connector for, see [CONNECTORS.md](CONNECTORS.md).
-- **Detectors:** all three are on by default. The code-change detector's path map is set per GitHub or
-  GitLab connector (`generic` unless you choose otherwise).
+- **Detectors:** ten are available. CI, merge-policy, overdue-job and service-objective monitoring
+  need explicit targets in **Operational settings** before they can find anything. Collection
+  health applies to active polling sources. The code-change path map is per GitHub/GitLab connector;
+  path-only matches appear as **Observations** and do not trigger alerts. See the [detector guide](../README.md#deterministic-detectors).
 - **Alerts:** create a rule, point it at a webhook or a Slack incoming webhook, then **Turn on**. It
   starts from now and never replays history. Verify webhook signatures as described in the README.
 
 **Done when:** a test event from one source appears under **Activity**, and an alert rule shows a
 recent **Last delivered**.
 
+After activation, inspect connector health and an expected event. An empty successful poll is healthy.
+GitHub sources can be edited in place with a signed approval; existing tokens and collected history
+are preserved. Native provider alerts require explicit recovery to resolve automatically.
+
 ## 9. Operate
+
+Read [the 1.0 release and upgrade guide](RELEASING.md) before upgrading a pre-release installation.
+Back up the database, deployment environment and trust file; older authentication migrations can
+invalidate sessions and remove tables, so an image-only downgrade is not a general rollback.
 
 | Task                                          | How                                                                                                                                                                                        |
 | :-------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

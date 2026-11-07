@@ -1,9 +1,9 @@
-# Self-host Intelligence
+# Self-host INTYGA Intelligence 1.0
 
 Intelligence is free to run on your infrastructure. It requires an INTYGA workspace for sign-in and
 approval. Members link an application passkey once, then sign in and approve inside Intelligence.
 Your INTYGA deployment must support **Integrations → Member applications**, SERVICE API keys and
-application trust-anchor exports. OIDC App sign-in is optional. Upgrade INTYGA if these controls are missing.
+application trust-anchor exports and application-specific approval routing (`POST /embedded/applications/:applicationId/authorize`). OIDC App sign-in is optional. Upgrade INTYGA if these controls are missing.
 
 The app correlates observations from existing sources. It does not run uptime probes or provide
 on-call escalation schedules. Keep those monitors running and send their incident events here.
@@ -11,12 +11,12 @@ No AI subscription or model key is needed for deterministic findings.
 
 ## Install
 
-You need Node 24+ for the setup script, Docker with Compose, and an HTTPS origin for public access.
+You need Node 26+ for the setup script, Docker with Compose, and an HTTPS origin for public access.
 Local trials can use `http://localhost:4100`.
 
 ```sh
-git clone https://github.com/intyga-dev/intyga-intelligence.git
-cd intyga-intelligence
+git clone https://github.com/intyga-dev/intelligence.git
+cd intelligence
 node scripts/self-host.mjs --origin https://intelligence.example.com
 docker compose --env-file .env.selfhost -f compose.selfhost.yml up -d --build
 ```
@@ -67,6 +67,12 @@ embedded configuration, the normal approval sign-in flow opens INTYGA and grants
 browser administrator access for 12 hours. Keep the corresponding console-origin trust anchor
 for that mode. There is no password login or authentication bypass.
 
+Approvals stay in Intelligence. Share the application approval link when quorum needs another
+member; new embedded requests do not send INTYGA console approval notifications. A gateway without
+application routing is refused; the app does not fall back to console signing.
+
+Choose **Edit your name** after signing in to replace a technical identity label with your display name.
+
 An INTYGA outage prevents new sign-ins and approvals; enabled collection and detection continue.
 For local development use host `pnpm dev`, `PUBLIC_URL=http://localhost:4100` and loopback gateway
 URLs. The INTYGA console operator must enable `EMBEDDED_ALLOW_LOCALHOST=true` in development.
@@ -85,6 +91,8 @@ stale data and a quiet source. Configure an alert target if findings should noti
 See [CONNECTORS.md](CONNECTORS.md) for source setup and supported event kinds.
 
 ## Operate and upgrade
+
+For 1.0.0 prerequisites, migration/rollback limits and release selection, see [RELEASING.md](RELEASING.md).
 
 ```sh
 docker compose --env-file .env.selfhost -f compose.selfhost.yml ps

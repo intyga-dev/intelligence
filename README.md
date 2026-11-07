@@ -18,7 +18,7 @@ evidence-backed findings** that genuinely need human attention.
 key and an exported trust-anchor file in the deployment environment. Start with the
 [self-hosting walkthrough](docs/SELF_HOST.md).
 
-Intelligence is a member-bound embedded approval example. Link your real INTYGA workspace membership
+Intelligence is a self-hosted application with member-bound embedded approvals. Link your real INTYGA workspace membership
 once, then create an application passkey. Sign-in and protected changes use that passkey inside
 Intelligence. ADMINs administer; MEMBERs read. Quorum, eligibility and one-use redemption remain
 INTYGA’s responsibility. Intelligence verifies every receipt against a mounted application trust
@@ -28,10 +28,10 @@ Before configuration, explore the static example incident at `/demo`.
 Group deployment, error and incident sources into **Services** to investigate their findings and
 recent observations together. Deploy regressions use only signals from the same service.
 
-**Status: `0.1.0`, early.** Four deterministic detectors ship today (see
-[Detectors](#deterministic-detectors)); the connectors are working integrations but should be read
-as reference implementations rather than a supported product surface. There is no support SLA.
-Issues and pull requests are welcome and will be read; nothing here is promised on a timeline.
+**Version: `1.0.0`.** Ten deterministic detectors and 21 connectors are included.
+See the [release notes](CHANGELOG.md), [detector coverage](#deterministic-detectors), and
+[connector setup and limits](docs/CONNECTORS.md). Validate each connector against your provider
+account before relying on it. There is no support SLA.
 
 ---
 
@@ -67,7 +67,7 @@ flowchart LR
     end
 
     subgraph Governance [Governance]
-        Findings --> Approval[WebAuthn Passkey Signing]
+        Changes[Protected configuration changes] --> Approval[WebAuthn Passkey Signing]
     end
 
     Sources --> Ingest
@@ -88,8 +88,9 @@ flowchart LR
 
   Model judgment is optional, off by default, and can only calibrate severity or filter expected
   behaviour. It can never be the reason a finding exists.
-- **Sign in with INTYGA.** OpenID Connect with PKCE verifies the person, workspace and role.
-  Passkeys stay at INTYGA; sessions here are opaque, server-side and revocable, with HttpOnly cookies.
+- **Sign in with an application passkey.** Active INTYGA workspace membership supplies the person
+  and role. Application passkeys sign inside Intelligence; private keys stay in the authenticator.
+  Optional OIDC uses PKCE. Sessions are opaque, server-side and revocable, with HttpOnly cookies.
 - **Every privileged action needs approval.** Intelligence sends the action description, target and
   parameters to INTYGA. It verifies the receipt against the frozen request and the locally pinned
   approver keys, then redeems the approval before executing. This is an ordinary workspace approval,
@@ -147,7 +148,7 @@ and `INTYGA_OIDC_CLIENT_ID`; its verified identity claims determine the role. Us
 anchor for that mode. Existing sessions expire within 12 hours unless revoked locally; upstream role
 changes refresh at sign-in. Changing deployment identity invalidates old sessions and pending actions.
 
-An administrator can paste arbitrary public keys into a trust anchor. A bad anchor can make actions
+A deployment operator can put arbitrary public keys into a trust anchor. A bad anchor can make actions
 fail, but it cannot bypass approval: INTYGA independently checks eligibility and one-use redemption.
 
 ---
@@ -168,10 +169,26 @@ Detectors never observe raw vendor APIs.
 | **Fly.io**           | `poll` (API)                              | Machine state changes, restarts and OOM kills.                                                              |
 | **GitLab**           | `poll` (API, gitlab.com or self-managed)  | Merge requests with changed paths, and deployments per environment.                                         |
 | **PagerDuty**        | `push` (webhook v3, signed)               | Incidents triggered, acknowledged and resolved.                                                             |
-| **Opsgenie**         | `push` (webhook, shared-secret header)    | Alerts created and closed. Opsgenie itself shuts down on 5 April 2027.                                      |
+| **Opsgenie**         | `push` (webhook, shared-secret header)    | Alerts created and closed. For existing Opsgenie deployments; confirm provider availability.                |
 | **Datadog**          | `push` (webhook, shared-secret header)    | Monitor alerts triggering and recovering.                                                                   |
 | **Cloudflare Pages** | `poll` (API)                              | Finished Pages deployments mapped to commit SHAs.                                                           |
 | **Netlify**          | `push` (deploy notifications, signed JWS) | Deploys that went live or failed, mapped to commit SHAs.                                                    |
+
+The following native alert integrations complete the 21-connector catalogue:
+
+| Connector                     | Ingest mode | Implemented signals                                                                  |
+| ----------------------------- | ----------- | ------------------------------------------------------------------------------------ |
+| AWS EventBridge               | Push        | CloudWatch alarms, Backup jobs, Health issues and GuardDuty findings.                |
+| Google Cloud Monitoring       | Push        | Open and closed Monitoring incidents.                                                |
+| Google Workspace Alert Center | Poll        | Alert metadata and provider status; no Gmail or Drive content.                       |
+| Azure Monitor                 | Poll        | Alerts Management alerts for a configured public-Azure subscription.                 |
+| Grafana Alerting              | Push        | Individual firing and resolved alerts in grouped deliveries.                         |
+| Prometheus Alertmanager       | Push        | Individual firing and resolved alerts; does not scrape metrics.                      |
+| Stripe                        | Push        | Failed/paid payouts and created/closed disputes; excludes ordinary payment declines. |
+| Better Stack                  | Poll        | Monitor and heartbeat incidents with explicit recovery.                              |
+
+These feed `provider-alerts`; provider reports do not independently establish a root cause.
+See [authentication and first-event checks](docs/CONNECTORS.md#native-provider-integrations).
 
 **Your own sources:** send signed JSON to the custom webhook with no code, or write a connector in one
 file. [docs/CONNECTORS.md](docs/CONNECTORS.md) covers both, with signing examples for bash, Node and
@@ -286,7 +303,7 @@ and [`.env.production.example`](.env.production.example)._
 
 ### Prerequisites
 
-- **Node.js** `v24+` and **pnpm** `v10+`
+- **Node.js** `v26+` and **pnpm** `v10+`
 - **Docker & Docker Compose** (for PostgreSQL)
 - **An INTYGA workspace** with a SERVICE key and trust anchor (OIDC is optional) — see
   [Read this first](#read-this-first). INTYGA Cloud (`app.intyga.com`) is not generally available
@@ -295,8 +312,8 @@ and [`.env.production.example`](.env.production.example)._
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/intyga-dev/intyga-intelligence.git
-cd intyga-intelligence
+git clone https://github.com/intyga-dev/intelligence.git
+cd intelligence
 cp .env.example .env
 pnpm install
 ```
@@ -375,6 +392,12 @@ app uses component selectors for scoping and does not require a frontend bundler
 
 ---
 
+## Your display name
+
+Choose **Edit your name** beside your signed-in identity, or open `/profile`. Save a name of
+1–80 characters for activity attribution. It persists across sign-ins. This is a display
+preference: it does not change your INTYGA identity, workspace role, passkeys or recorded actor IDs.
+
 ## Adding connectors
 
 1. Navigate to **Connectors** (`http://localhost:4100/connectors`).
@@ -428,21 +451,23 @@ the console defaults to open findings and 25 per page. Invalid filters return HT
 
 ### Ingestion
 
-`POST /ingest/:kind/:connectionId` is the only inbound data path. Deliveries are verified by HMAC
-over the raw bytes, stored idempotently under the provider's own event id, then normalized. It
-authenticates per request by signature and never by a session.
+`POST /ingest/:kind/:connectionId` is the only inbound data path. Each connector authenticates
+deliveries using its documented signature, shared secret or HTTP Basic credentials. Signed payloads
+are checked against the raw bytes. Accepted deliveries are stored idempotently by source event ID
+and normalized; browser sessions do not authenticate webhook deliveries.
 
 The endpoint is internet-facing by definition, so it spends two token buckets before doing any work
 — one global, one per connection — bounding the CPU and the rows an unauthenticated caller can cost.
-They are a **cost guard, not an authentication control**; the HMAC is what decides whether a delivery
-is real. See [`src/server/ratelimit.ts`](src/server/ratelimit.ts) for what they do and do not bound,
+They are a **cost guard, not an authentication control**; each connector's authentication check
+decides whether a delivery is accepted. See [`src/server/ratelimit.ts`](src/server/ratelimit.ts) for what they do and do not bound,
 including why they are deliberately not keyed on the client address.
 
 ### Detection tick
 
-`POST /internal/tick` polls the poll-mode connectors and runs the detectors. Driven externally
-rather than by an in-process timer, so a restart does not skip a window and a second replica does
-not double-run. Protected by a bearer token (`TICK_TOKEN`), compared in constant time:
+`POST /internal/tick` polls active polling connectors, runs detection and delivers alerts. An
+external scheduler calls it once a minute. The overlap guard is in-process: run one application
+instance and one scheduler, and monitor scheduler failures independently. A restart or outage can
+leave collection gaps. The endpoint requires a bearer token (`TICK_TOKEN`), compared in constant time:
 
 ```bash
 curl -X POST http://localhost:4100/internal/tick \
@@ -519,32 +544,38 @@ and turning it on requires an administrator passkey signature.
 
 ## Environment configuration
 
-| Variable                             | Description                                                                                                                              | Default                                |
-| :----------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------- |
-| `PORT`                               | HTTP port the console and ingest API bind to.                                                                                            | `4100`                                 |
-| `PUBLIC_URL`                         | Canonical instance origin for browser sign-in, approval targets and webhook links.                                                       | Required                               |
-| `INTYGA_CONSOLE_URL`                 | Console where workspace members approve requests.                                                                                        | Required                               |
-| `DATABASE_URL`                       | PostgreSQL connection string.                                                                                                            | Required                               |
-| `DIRECT_URL`                         | Direct connection string for Prisma migrations (bypasses any pooler).                                                                    | Required                               |
-| `TICK_TOKEN`                         | Bearer token protecting `POST /internal/tick`.                                                                                           | Required in production                 |
-| `SECRETS_ENC_KEY`                    | 32-byte base64 key encrypting connection credentials at rest.                                                                            | Required in production                 |
-| `INTYGA_URL`                         | INTYGA gateway URL for sign-in and approval requests.                                                                                    | None                                   |
-| `INTYGA_INTERNAL_URL`                | Optional HTTPS server route to `INTYGA_URL`; browser redirects and issuer verification still use the public URL.                         | None                                   |
-| `INTYGA_WORKSPACE_ID`                | Workspace ID required in tokens, receipts and the trust anchor.                                                                          | None                                   |
-| `INTYGA_OIDC_CLIENT_ID`              | Optional public App sign-in client ID; callback is `<origin>/auth/callback`.                                                             | None                                   |
-| `INTYGA_SERVICE_CLIENT_ID`           | SERVICE API key client ID, used to request approvals.                                                                                    | None                                   |
-| `INTYGA_SERVICE_CLIENT_SECRET`       | SERVICE API key secret.                                                                                                                  | None                                   |
-| `INTYGA_TRUST_ANCHOR_FILE`           | Online application anchor exported from Member applications (console anchor from Approval Rules for non-embedded mode). Mount read-only. | Required for sign-in/actions           |
-| `INTYGA_EMBEDDED_APPLICATION_ID`     | Registered member application UUID. Enables in-page passkey ceremonies.                                                                  | None                                   |
-| `INTYGA_EMBEDDED_REGISTRATION_FILE`  | Short-lived ownership proof JSON served at the well-known URL.                                                                           | None                                   |
-| `INGEST_RATE_GLOBAL_PER_MIN`         | Aggregate ingest allowance across all connectors.                                                                                        | `1200`                                 |
-| `INGEST_RATE_PER_CONNECTION_PER_MIN` | Per-connection ingest allowance.                                                                                                         | `300`                                  |
-| `TYPESAFE_API_KEY`                   | _(Optional)_ Judgment provider key. Unset ⇒ null provider.                                                                               | None                                   |
-| `TYPESAFE_MODEL`                     | Judgment model.                                                                                                                          | `jev-latest`                           |
-| `TYPESAFE_ENDPOINT`                  | Judgment endpoint.                                                                                                                       | `https://api.typesafe.ai/v1/systemone` |
-| `TYPESAFE_TIMEOUT_MS`                | Judgment request timeout.                                                                                                                | `10000`                                |
-| `GITHUB_TOKEN`                       | _(Optional)_ Read-only fine-grained PAT for repository polling.                                                                          | None                                   |
-| `LOG_LEVEL`                          | Pino log level.                                                                                                                          | `info`                                 |
+Set connection variables explicitly; an unconfigured instance refuses sign-in and protected changes.
+Leave unused optional variables unset rather than assigning a placeholder string.
+
+| Variable                             | Purpose                                                                                      | Requirement or default                             |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `NODE_ENV`                           | Runtime mode; use `production` for a deployed instance.                                      | `development`                                      |
+| `PORT`                               | HTTP listener port.                                                                          | `4100`                                             |
+| `PUBLIC_URL`                         | Exact browser origin, approval target and webhook-link base.                                 | Required                                           |
+| `DATABASE_URL`                       | Intelligence PostgreSQL connection.                                                          | Required                                           |
+| `DIRECT_URL`                         | Direct database connection for Prisma migrations.                                            | Required for migrations                            |
+| `TICK_TOKEN`                         | Bearer token for `POST /internal/tick`.                                                      | Required in production                             |
+| `SECRETS_ENC_KEY`                    | Encryption key for stored credentials and browser state; generate 32 random bytes as base64. | Required in production                             |
+| `INTYGA_URL`                         | Gateway origin for sign-in and approval requests.                                            | Required                                           |
+| `INTYGA_CONSOLE_URL`                 | INTYGA console origin for member linking and hosted approval mode.                           | Required                                           |
+| `INTYGA_WORKSPACE_ID`                | Workspace named by tokens, receipts and the trust anchor.                                    | Required                                           |
+| `INTYGA_SERVICE_CLIENT_ID`           | SERVICE API key client ID.                                                                   | Required                                           |
+| `INTYGA_SERVICE_CLIENT_SECRET`       | SERVICE API key secret.                                                                      | Required                                           |
+| `INTYGA_TRUST_ANCHOR_FILE`           | Read-only online application anchor; use a console anchor for hosted mode.                   | Required for sign-in/actions                       |
+| `INTYGA_EMBEDDED_APPLICATION_ID`     | Member application UUID for in-page passkey ceremonies.                                      | Required for embedded mode                         |
+| `INTYGA_EMBEDDED_REGISTRATION_FILE`  | Short-lived ownership proof JSON.                                                            | Required during application ownership verification |
+| `INTYGA_OIDC_CLIENT_ID`              | Public App sign-in client; callback is `<origin>/auth/callback`.                             | Optional                                           |
+| `INTYGA_INTERNAL_URL`                | Private HTTPS route to the same gateway; public issuer checks stay unchanged.                | Optional                                           |
+| `INGEST_RATE_GLOBAL_PER_MIN`         | Aggregate ingest allowance.                                                                  | `1200`                                             |
+| `INGEST_RATE_PER_CONNECTION_PER_MIN` | Per-connection ingest allowance.                                                             | `300`                                              |
+| `TYPESAFE_API_KEY`                   | Optional judgment provider key; configure judgment explicitly before use.                    | Optional                                           |
+| `TYPESAFE_MODEL`                     | Judgment model.                                                                              | `jev-latest`                                       |
+| `TYPESAFE_ENDPOINT`                  | Judgment endpoint.                                                                           | `https://api.typesafe.ai/v1/systemone`             |
+| `TYPESAFE_TIMEOUT_MS`                | Judgment request timeout.                                                                    | `10000`                                            |
+| `GITHUB_TOKEN`                       | Read-only GitHub token for operator helpers; normally configure credentials per connector.   | Optional                                           |
+| `GITHUB_API_BASE`                    | GitHub API base URL, including an Enterprise API path when applicable.                       | `https://api.github.com`                           |
+| `INTYGA_TIMEOUT_MS`                  | INTYGA request timeout in milliseconds.                                                      | `10000`                                            |
+| `LOG_LEVEL`                          | Pino log level.                                                                              | `info`                                             |
 
 The `JEV_API_KEY`, `JEV_MODEL` and `JEV_ENDPOINT` names are the earlier spelling and are still read
 for compatibility. Set one family, not both — the `TYPESAFE_*` name wins silently.
@@ -571,8 +602,10 @@ pnpm exec tsx scripts/e2e-demo.ts <connectionId> <webhookSecret> http://localhos
 
 ## Contributing and security
 
-- [Deployment runbook](docs/RELEASE_RUNBOOK.html) — the 7 November release checklist for Core,
-  package publishing, and Intelligence. Open the HTML file in a browser to save your checks locally.
+- [Release guide](docs/RELEASING.md) — versioning, CI, upgrade checks and publication for 1.0.0.
+- [Changelog](CHANGELOG.md) — shipped behavior and upgrade notes.
+- [Historical rollout checklist](docs/RELEASE_RUNBOOK.html) — the earlier Core/package rollout snapshot;
+  its versions, branches and notification notes are superseded by the release guide.
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to propose a change, and the two rules a pull request
   here has to clear.
