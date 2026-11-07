@@ -29,10 +29,32 @@ function actionBtn(o: {
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────────────────────────
 
+export type OnboardingValues = Partial<
+  Record<
+    | "setupToken"
+    | "baseUrl"
+    | "consoleUrl"
+    | "workspaceId"
+    | "origin"
+    | "oidcClientId"
+    | "serviceClientId"
+    | "serviceSecret"
+    | "trustAnchor",
+    string
+  >
+>
+
 export function onboardingPage(
-  o: { error?: string; setupEnabled?: boolean; publicUrl?: string | null; consoleUrl?: string } = {},
+  o: {
+    error?: string
+    setupEnabled?: boolean
+    publicUrl?: string | null
+    consoleUrl?: string
+    values?: OnboardingValues
+  } = {},
 ): string {
   const consoleUrl = o.consoleUrl ?? "https://app.intyga.com"
+  const value = (name: keyof OnboardingValues, fallback = "") => esc(o.values?.[name] ?? fallback)
   if (o.setupEnabled === false) {
     return authPage({
       title: "Connect your INTYGA workspace",
@@ -70,19 +92,19 @@ export function onboardingPage(
       instance — without it, whoever found a fresh deployment first could claim it.
     </p>
     <div class="field"><label>Setup token</label>
-      <input name="setupToken" type="password" required autocomplete="off"></div>
+      <input name="setupToken" type="password" required autocomplete="off" value="${value("setupToken")}"></div>
   </div>
   <div class="authSection">
     <h2>Workspace</h2>
     <div class="grid g2">
       <div class="field"><label>INTYGA gateway URL</label>
-        <input name="baseUrl" required placeholder="https://api.intyga.com"></div>
+        <input name="baseUrl" required placeholder="https://api.intyga.com" value="${value("baseUrl")}"></div>
       <div class="field"><label>INTYGA console URL</label>
-        <input name="consoleUrl" required placeholder="https://app.intyga.com" value="${esc(consoleUrl)}"></div>
+        <input name="consoleUrl" required placeholder="https://app.intyga.com" value="${value("consoleUrl", consoleUrl)}"></div>
       <div class="field"><label>Workspace ID</label>
-        <input name="workspaceId" required placeholder="shown under Settings in the console"></div>
+        <input name="workspaceId" required placeholder="shown at the top of API Keys in the console" value="${value("workspaceId")}"></div>
       <div class="field"><label>This instance's origin</label>
-        <input name="origin" placeholder="https://intelligence.example.com" value="${esc(o.publicUrl ?? "")}">
+        <input name="origin" placeholder="https://intelligence.example.com" value="${value("origin", o.publicUrl ?? "")}">
         <div class="mut" style="font-size:11.5px;margin-top:5px">
           Scheme and port included. Sign-in returns here.</div></div>
     </div>
@@ -94,7 +116,7 @@ export function onboardingPage(
       <code>${esc(callback)}</code>. Paste the client ID it shows (there is no secret).
     </p>
     <div class="field"><label>OIDC client ID</label>
-      <input name="oidcClientId" required placeholder="oidc_…"></div>
+      <input name="oidcClientId" required placeholder="oidc_…" value="${value("oidcClientId")}"></div>
   </div>
   <div class="authSection">
     <h2>2 · Approvals — a service key</h2>
@@ -105,9 +127,9 @@ export function onboardingPage(
     </p>
     <div class="grid g2">
       <div class="field"><label>Service client ID</label>
-        <input name="serviceClientId" required placeholder="cid_…"></div>
+        <input name="serviceClientId" required placeholder="cid_…" value="${value("serviceClientId")}"></div>
       <div class="field"><label>Service secret</label>
-        <input name="serviceSecret" type="password" required autocomplete="off">
+        <input name="serviceSecret" type="password" required autocomplete="off" value="${value("serviceSecret")}">
         <div class="mut" style="font-size:11.5px;margin-top:5px">Encrypted at rest and never returned by the API.</div></div>
     </div>
   </div>
@@ -118,7 +140,7 @@ export function onboardingPage(
       against these keys itself, offline, before anything runs. Re-export it when approvers change.
     </p>
     <div class="field"><label>Trust anchor (JSON)</label>
-      <textarea name="trustAnchor" rows="4" required placeholder='{"type":"intyga-trust-anchor", …}'></textarea></div>
+      <textarea name="trustAnchor" rows="4" required placeholder='{"type":"intyga-trust-anchor", …}'>${value("trustAnchor")}</textarea></div>
   </div>
   <button class="primary" type="submit" style="margin-top:6px">Connect workspace</button>
 </form>`,

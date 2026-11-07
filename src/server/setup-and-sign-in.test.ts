@@ -128,6 +128,45 @@ test("missing and incorrect setup tokens never connect a workspace", { skip }, a
   assert.equal(await prisma.tenant.count(), 0)
 })
 
+test("setup validation preserves every submitted field so the operator can correct and retry", {
+  skip,
+}, async () => {
+  const decode = (s: string) =>
+    s
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&")
+  for (const [changes, status] of [
+    [{ baseUrl: "not a URL" }, 400],
+    [{ setupToken: "wrong" }, 403],
+    [{ trustAnchor: "garbled" }, 400],
+    [{ trustAnchor: JSON.stringify({ ...anchor, tenantId: "foreign" }) }, 400],
+    [
+      { workspaceId: '"><script>alert(1)</script>', trustAnchor: "</textarea><script>alert(2)</script>" },
+      400,
+    ],
+  ] as const) {
+    const submitted = { ...details(), ...changes, serviceSecret: 'pasted"secret<&>' }
+    const response = await form("/settings/bind", submitted)
+    assert.equal(response.statusCode, status)
+    assert.equal(response.headers["cache-control"], "no-store")
+    assert.doesNotMatch(response.body, /<script>|<\/textarea><script>/)
+    for (const [name, expected] of Object.entries(submitted)) {
+      const field = response.body.match(
+        name === "trustAnchor"
+          ? /<textarea name="trustAnchor"[^>]*>([\s\S]*?)<\/textarea>/
+          : new RegExp(`<input name="${name}"[^>]*value="([^"]*)"`),
+      )
+      assert.ok(field, name)
+      assert.equal(decode(field[1] ?? ""), expected, name)
+    }
+    assert.equal(await prisma.tenant.count(), 0)
+  }
+  await connect()
+  assert.equal(await prisma.tenant.count(), 1)
+})
+
 test("production browser setup is disabled without a token and refuses placeholders", { skip }, async () => {
   delete process.env.SETUP_TOKEN
   const home = await app.inject({ url: "/" })

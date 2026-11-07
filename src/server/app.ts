@@ -63,6 +63,7 @@ import {
   type JudgmentAuditRow,
   judgmentPage,
   membersPage,
+  type OnboardingValues,
   onboardingPage,
   overviewPage,
   settingsPage,
@@ -348,11 +349,12 @@ export function buildApp(): FastifyInstance {
       return true
     }
   }
-  const onboarding = (error?: string): string =>
+  const onboarding = (error?: string, values?: OnboardingValues): string =>
     onboardingPage({
       setupEnabled: setupEnabled(),
       publicUrl: config.publicUrl,
       consoleUrl: config.intygaConsoleUrl,
+      ...(values ? { values } : {}),
       ...(error ? { error } : {}),
     })
 
@@ -923,9 +925,20 @@ export function buildApp(): FastifyInstance {
   // First-time connection: the ONE route an unbound instance serves, gated by SETUP_TOKEN. There is
   // no administrator to enrol — the first workspace ADMIN who signs in with INTYGA is one.
   app.post("/settings/bind", async (req, reply) => {
+    // Retain submitted values on every refusal, including secrets the operator just pasted.
+    // They only live in this response, escaped by the renderer; never cache the filled form.
+    reply.header("Cache-Control", "no-store")
+    const values: OnboardingValues = {}
+    if (req.body && typeof req.body === "object") {
+      const body = req.body as Record<string, unknown>
+      for (const name of Object.keys(BIND.shape) as (keyof OnboardingValues)[]) {
+        if (typeof body[name] === "string") values[name] = body[name]
+      }
+    }
+    const refused = (status: number, message: string) => html(reply.code(status), onboarding(message, values))
     const parsed = BIND.safeParse(req.body)
     if (!parsed.success) {
-      return html(reply.code(400), onboarding(parsed.error.issues[0]?.message ?? "Invalid details"))
+      return refused(400, parsed.error.issues[0]?.message ?? "Invalid details")
     }
     const d = parsed.data
     const existing = await tenant()
@@ -940,28 +953,26 @@ export function buildApp(): FastifyInstance {
       expected = config.setupToken
     } catch (err) {
       req.log.error({ err: (err as Error).message }, "SETUP_TOKEN rejected")
-      return html(
-        reply.code(503),
-        onboarding("SETUP_TOKEN on the server is a placeholder or too short. Set a real value and restart."),
+      return refused(
+        503,
+        "SETUP_TOKEN on the server is a placeholder or too short. Set a real value and restart.",
       )
     }
     if (expected === null) {
-      return html(
-        reply.code(403),
-        onboarding(
-          "Browser setup is disabled on this server. Set SETUP_TOKEN, or bind from the command line " +
-            "with scripts/bind-workspace.ts.",
-        ),
+      return refused(
+        403,
+        "Browser setup is disabled on this server. Set SETUP_TOKEN, or bind from the command line " +
+          "with scripts/bind-workspace.ts.",
       )
     }
     if (!tokenMatches(d.setupToken, expected)) {
       req.log.warn("setup attempted with a wrong setup token")
-      return html(reply.code(403), onboarding("That setup token is not correct."))
+      return refused(403, "That setup token is not correct.")
     }
     const anchor = parseTrustAnchor(d.trustAnchor)
-    if (!anchor.ok) return html(reply.code(400), onboarding(anchor.error))
+    if (!anchor.ok) return refused(400, anchor.error)
     if (anchor.anchor.tenantId !== d.workspaceId)
-      return html(reply.code(400), onboarding("The trust anchor must name the connected workspace."))
+      return refused(400, "The trust anchor must name the connected workspace.")
     const data = {
       intygaBaseUrl: d.baseUrl,
       intygaConsoleUrl: d.consoleUrl,
