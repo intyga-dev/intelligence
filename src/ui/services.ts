@@ -15,12 +15,18 @@ export function servicesPage(o: {
     ...(o.actor ? { actor: o.actor } : {}),
     lede: "Follow the systems your team runs. Each service brings its sources, changes and findings together.",
     body: `
+<style>
+.serviceCreate{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.serviceCreate .field{margin:0;min-width:0}
+.serviceCreate .actions{grid-column:1/-1}
+@media(max-width:640px){.serviceCreate{grid-template-columns:1fr}}
+</style>
 <div class="card"><h2>Your first service</h2>
 <p class="mut">Create a service such as “Production API”, assign its deployment and signal sources below, then turn those sources on in <a href="/connectors">Connectors</a>. Use separate connections for unrelated services or environments.</p>
-<form id="create-service" class="grid g2">
+<form id="create-service" class="serviceCreate">
   <div class="field"><label for="service-name">Service name</label><input id="service-name" name="name" required maxlength="80" placeholder="Production API"></div>
   <div class="field"><label for="service-description">Description (optional)</label><input id="service-description" name="description" maxlength="300" placeholder="Customer-facing API and its worker"></div>
-  <div><button type="submit" class="primary">Create service with INTYGA</button></div>
+  <div class="actions"><button type="submit" class="primary">Create service with INTYGA</button></div>
 </form></div>
 <div class="grid g2">${
       o.services.length
