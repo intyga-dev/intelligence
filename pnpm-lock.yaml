@@ -16,8 +16,8 @@ importers:
   .:
     dependencies:
       '@intyga/sdk':
-        specifier: ^2.3.0
-        version: 2.3.0
+        specifier: ^2.3.1
+        version: 2.3.1
       '@prisma/adapter-pg':
         specifier: ^7.10.1
         version: 7.10.1
@@ -318,13 +318,13 @@ packages:
   '@fastify/proxy-addr@5.1.1':
     resolution: {integrity: sha512-zv07Y9GEuDsJPegZoDFd4SDWaZOW8N2pa0GSrYmKpId/tjt1Hgo3BjZBVjdVpfVrHaA+Qv5jawtS2O50J5xM9g==}
 
-  '@intyga/sdk@2.3.0':
-    resolution: {integrity: sha512-R07W6kU34jc/cUE+kwcu688/tvbWFYTKv29H2SjWWFNfJ2CzSnMLqDhVVpyQ3SJv8be/z/hxt1++AC8gf8GAwQ==}
+  '@intyga/sdk@2.3.1':
+    resolution: {integrity: sha512-g7kFdybAZQIVrUQ6ykQ5Y7bQeOe9MQ/OO1N4x+oLnAycNaB77PH+MTS6YO2YzGJ94yP3grh3krSN87ZnVJzLJw==}
     engines: {node: '>=18'}
     hasBin: true
 
-  '@intyga/verify@2.3.0':
-    resolution: {integrity: sha512-QWUjFQcy29u/ODFwMV4v2omvHkLg0N40pjuJ2GCgzNe7XcqjTDUq4s0z4NrYWSTlX88XkOdb1QNCojokRPCWVQ==}
+  '@intyga/verify@2.4.0':
+    resolution: {integrity: sha512-PBw8fB9Giny3o6vW69/SI2QCpsYBB6XpQtfBKhcoARALEG6S/tMmAoRY94FuyQZBOWJX+QiRZGXrLIuttPzkag==}
     engines: {node: '>=18'}
 
   '@pinojs/redact@0.4.0':
@@ -1368,11 +1368,11 @@ snapshots:
       '@fastify/forwarded': 3.0.2
       ipaddr.js: 2.5.0
 
-  '@intyga/sdk@2.3.0':
+  '@intyga/sdk@2.3.1':
     dependencies:
-      '@intyga/verify': 2.3.0
+      '@intyga/verify': 2.4.0
 
-  '@intyga/verify@2.3.0': {}
+  '@intyga/verify@2.4.0': {}
 
   '@pinojs/redact@0.4.0': {}
 

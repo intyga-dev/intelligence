@@ -40,7 +40,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@intyga/sdk": "^2.3.0",
+    "@intyga/sdk": "^2.3.1",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "fastify": "5.12.8",
