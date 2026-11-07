@@ -116,3 +116,19 @@ for (const [claim, value] of [
     await assert.rejects(completeLogin(gateway.binding, ORIGIN, started.query, started.cookie), AuthError)
   })
 }
+
+test("an internal gateway route never changes the public redirect or accepted issuer", async () => {
+  const binding = {
+    ...gateway.binding,
+    baseUrl: "https://issuer.example.test",
+    transportUrl: gateway.baseUrl,
+  }
+  const started = beginLogin(binding, ORIGIN)
+  const url = new URL(started.redirectTo)
+  assert.equal(url.origin, binding.baseUrl)
+  const query = { state: url.searchParams.get("state") ?? "", code: "one-time-code" }
+  gateway.state.claims.iss = binding.baseUrl
+  assert.equal((await completeLogin(binding, ORIGIN, query, started.cookie)).tenantId, WORKSPACE)
+  gateway.state.claims.iss = gateway.baseUrl
+  await assert.rejects(completeLogin(binding, ORIGIN, query, started.cookie), /does not verify/)
+})

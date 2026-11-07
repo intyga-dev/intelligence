@@ -22,6 +22,8 @@ const LOGIN_TTL_MS = 10 * 60_000
 
 export interface OidcBinding {
   baseUrl: string
+  /** Server-only route to the same gateway. The public baseUrl remains the verified issuer. */
+  transportUrl?: string
   clientId: string
   /** The bound workspace. A token for any other workspace is refused, however valid. */
   workspaceId: string | null
@@ -135,8 +137,9 @@ export async function completeLogin(
   if (!query.code || query.code.length > 2048) throw new AuthError("INTYGA returned no sign-in code")
 
   let res: Response
+  const transportUrl = binding.transportUrl ?? binding.baseUrl
   try {
-    res = await fetchImpl(new URL("/oauth/token", binding.baseUrl), {
+    res = await fetchImpl(new URL("/oauth/token", transportUrl), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({
@@ -156,7 +159,7 @@ export async function completeLogin(
 
   let claims: Record<string, unknown>
   try {
-    const verified = await jwtVerify(body.id_token, jwks(binding.baseUrl), {
+    const verified = await jwtVerify(body.id_token, jwks(transportUrl), {
       issuer: binding.baseUrl,
       audience: binding.clientId,
       algorithms: ["RS256"],

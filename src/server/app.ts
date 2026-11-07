@@ -5,6 +5,7 @@ import { UnsafeTargetError } from "../alerts/deliver.ts"
 import { ActionError, openAction, pollAction, tenantBinding } from "../actions/execute.ts"
 import { GateError, parseTrustAnchor, resolveGateConfig, testConnection } from "../gate/client.ts"
 import { AuthError, beginLogin, completeLogin, LOGIN_COOKIE } from "../auth/oidc.ts"
+import { gatewayTransportUrl } from "../gate/transport.ts"
 import {
   clearCookie,
   COOKIE,
@@ -405,7 +406,12 @@ export function buildApp(): FastifyInstance {
     const clearLogin = `${LOGIN_COOKIE}=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0`
     try {
       const person = await completeLogin(
-        { baseUrl: t.intygaBaseUrl, clientId: t.intygaOidcClientId, workspaceId: t.intygaWorkspaceId },
+        {
+          baseUrl: t.intygaBaseUrl,
+          transportUrl: gatewayTransportUrl(t.intygaBaseUrl),
+          clientId: t.intygaOidcClientId,
+          workspaceId: t.intygaWorkspaceId,
+        },
         originFor(t, req),
         q,
         readCookie(req.headers.cookie, LOGIN_COOKIE),

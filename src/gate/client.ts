@@ -9,6 +9,7 @@ import {
   verifyApprovalReceipt,
 } from "@intyga/sdk"
 import { config } from "../config.ts"
+import { gatewayTransportUrl } from "./transport.ts"
 
 // Intelligence is an ordinary INTYGA relying party (core ADR 030).
 //
@@ -109,7 +110,7 @@ export function gateConfigured(tenant: TenantGateBinding | null = null): boolean
 
 function client(cfg: GateConfig): IntygaClient {
   return new IntygaClient({
-    gatewayUrl: cfg.baseUrl,
+    gatewayUrl: gatewayTransportUrl(cfg.baseUrl),
     clientId: cfg.serviceClientId,
     clientSecret: cfg.serviceSecret,
   })

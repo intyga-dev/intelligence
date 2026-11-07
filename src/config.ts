@@ -135,6 +135,8 @@ export const config = {
    */
   intyga: {
     baseUrl: process.env.INTYGA_URL ?? null,
+    /** Optional server-only route to INTYGA_URL, e.g. Docker's host.docker.internal in local dev. */
+    internalUrl: process.env.INTYGA_INTERNAL_URL ?? null,
     workspaceId: process.env.INTYGA_WORKSPACE_ID ?? null,
     oidcClientId: process.env.INTYGA_OIDC_CLIENT_ID ?? null,
     serviceClientId: process.env.INTYGA_SERVICE_CLIENT_ID ?? null,

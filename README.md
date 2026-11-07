@@ -273,6 +273,10 @@ Store the service secret in `service.secret` with owner-only permissions. For a 
 installation use its gateway and console URLs (normally `http://localhost:8787` and
 `http://localhost:3999`). The trust anchor must name the connected workspace.
 
+When Intelligence runs in Docker and INTYGA runs on the host, set `INTYGA_URL=http://localhost:8787`
+and `INTYGA_INTERNAL_URL=http://host.docker.internal:8787` in `.env`, then recreate the app.
+The internal route carries server requests only; the public issuer remains `http://localhost:8787`.
+
 ### 5. Start the application
 
 ```bash
@@ -419,6 +423,7 @@ and turning it on requires an administrator passkey signature.
 | `SETUP_TOKEN` | Required to complete first-time setup in the browser. Unset in production ⇒ browser setup disabled; use `scripts/bind-workspace.ts`. | Dev placeholder |
 | `SECRETS_ENC_KEY` | 32-byte base64 key encrypting connection credentials at rest. | Required in production |
 | `INTYGA_URL` | INTYGA gateway URL for sign-in and approval requests. | None |
+| `INTYGA_INTERNAL_URL` | Optional server-only route to `INTYGA_URL`; browser redirects and issuer verification still use the public URL. | None |
 | `INTYGA_WORKSPACE_ID` | Workspace ID required in tokens, receipts and the trust anchor. | None |
 | `INTYGA_OIDC_CLIENT_ID` | Public App sign-in client ID; callback is `<origin>/auth/callback`. | None |
 | `INTYGA_SERVICE_CLIENT_ID` | SERVICE API key client ID, used to request approvals. | None |

@@ -57,6 +57,8 @@ hostname changes. Passkeys belong to the INTYGA console domain. A containerized 
 6. Clear `SETUP_TOKEN` in `.env.selfhost` and recreate the app after setup. Preserve the other secrets.
 
 For a private INTYGA deployment, set `INTYGA_CONSOLE_URL` before starting the stack.
+For the development Compose stack with INTYGA running on the Docker host, see the
+[local gateway routing note](../README.md#4-connect-the-workspace).
 There is no password login or auth bypass. An INTYGA outage prevents new sign-ins and approvals;
 already-enabled collection and detection continue locally.
 
