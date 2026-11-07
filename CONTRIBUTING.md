@@ -32,7 +32,7 @@ CI runs exactly this. There is no separate set of checks to discover after revie
 
 ## What a good change looks like here
 
-**Match the comment style.** This codebase explains *why*, at length, where the reasoning is not
+**Match the comment style.** This codebase explains _why_, at length, where the reasoning is not
 recoverable from the code. Several comments exist specifically because an earlier, more obvious
 version was wrong — the bare-identifier boundary check that fired on documentation, the eager
 config getter that threw on import, the 2xx on a failed normalize. If your change reverses a

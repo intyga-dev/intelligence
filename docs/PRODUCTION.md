@@ -23,11 +23,11 @@ depend on it.
 
 ## 0. Decisions to make first — these are hard to change later
 
-| Decision | Why it is sticky |
-| :--- | :--- |
-| **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It fixes the embedded application origin/RP ID and approval target. Moving hosts requires a new registration and app-scoped passkeys. Optional OIDC also requires its callback registration to change. |
-| **`SECRETS_ENC_KEY`** | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and temporary browser state. The INTYGA service key stays in deployment secrets. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
-| **Single instance** | Rate limits and the tick guard are in-process. Run exactly one container. Two replicas would double the allowances; correctness holds, but the guards weaken. |
+| Decision                                                                      | Why it is sticky                                                                                                                                                                                                                                                   |
+| :---------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The hostname** Intelligence is served from, e.g. `intelligence.example.com` | It fixes the embedded application origin/RP ID and approval target. Moving hosts requires a new registration and app-scoped passkeys. Optional OIDC also requires its callback registration to change.                                                             |
+| **`SECRETS_ENC_KEY`**                                                         | Encrypts every stored credential: connector tokens, webhook secrets, alert destinations and temporary browser state. The INTYGA service key stays in deployment secrets. Losing it means entering all of them again. Keep it in your secret manager with a backup. |
+| **Single instance**                                                           | Rate limits and the tick guard are in-process. Run exactly one container. Two replicas would double the allowances; correctness holds, but the guards weaken.                                                                                                      |
 
 ## 1. Prerequisites
 
@@ -142,14 +142,14 @@ recent **Last delivered**.
 
 ## 9. Operate
 
-| Task | How |
-| :--- | :--- |
-| **Upgrade** | Build the new image, run step 4's migration, then replace the container. |
-| **Backups** | Postgres backups with point-in-time recovery. Intelligence holds derived observations, not a system of record, but it does hold connector configuration and history. Test a restore once. |
-| **Lost passkey** | Recover the INTYGA account, link a replacement application passkey, and refresh the mounted application trust anchor. Revocation/recovery invalidates embedded signing eligibility. |
-| **Rotate the SERVICE secret or trust anchor** | Update the deployment secret or mounted application anchor and restart. The anchor must name the connected workspace. INTYGA rechecks eligibility at redemption. |
-| **Change workspace** | Replace deployment configuration and the mounted anchor, register the application in the new workspace, and restart. The binding fingerprint invalidates old sessions and pending actions. |
-| **Watch** | Alert on `/ready` failing, and on the tick scheduler's failures. Nothing else pages you if ticks stop: findings simply stop appearing. |
+| Task                                          | How                                                                                                                                                                                        |
+| :-------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Upgrade**                                   | Build the new image, run step 4's migration, then replace the container.                                                                                                                   |
+| **Backups**                                   | Postgres backups with point-in-time recovery. Intelligence holds derived observations, not a system of record, but it does hold connector configuration and history. Test a restore once.  |
+| **Lost passkey**                              | Recover the INTYGA account, link a replacement application passkey, and refresh the mounted application trust anchor. Revocation/recovery invalidates embedded signing eligibility.        |
+| **Rotate the SERVICE secret or trust anchor** | Update the deployment secret or mounted application anchor and restart. The anchor must name the connected workspace. INTYGA rechecks eligibility at redemption.                           |
+| **Change workspace**                          | Replace deployment configuration and the mounted anchor, register the application in the new workspace, and restart. The binding fingerprint invalidates old sessions and pending actions. |
+| **Watch**                                     | Alert on `/ready` failing, and on the tick scheduler's failures. Nothing else pages you if ticks stop: findings simply stop appearing.                                                     |
 
 ## Security properties to know
 

@@ -2,8 +2,8 @@
 
 Intelligence is free to run on your infrastructure. It requires an INTYGA workspace for sign-in and
 approval. Members link an application passkey once, then sign in and approve inside Intelligence.
-Your INTYGA deployment must support **Integrations → App sign-in**, SERVICE API keys and online
-trust-anchor exports from **Approval Rules**. Upgrade INTYGA if these controls are missing.
+Your INTYGA deployment must support **Integrations → Member applications**, SERVICE API keys and
+application trust-anchor exports. OIDC App sign-in is optional. Upgrade INTYGA if these controls are missing.
 
 The app correlates observations from existing sources. It does not run uptime probes or provide
 on-call escalation schedules. Keep those monitors running and send their incident events here.
