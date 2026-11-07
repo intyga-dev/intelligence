@@ -1,12 +1,11 @@
 import assert from "node:assert/strict"
-import { createPrivateKey, createPublicKey } from "node:crypto"
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { initialiseSelfHost, publicOrigin } from "./setup.ts"
 
-test("installer creates matching keys and private secrets without overwriting a prior install", (t) => {
+test("installer writes private secrets once and never overwrites a prior install", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "intelligence-setup-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   initialiseSelfHost(dir, "https://intelligence.example.com/", 4200)
@@ -14,13 +13,14 @@ test("installer creates matching keys and private secrets without overwriting a 
   assert.match(env, /PUBLIC_URL=https:\/\/intelligence.example.com\n/)
   assert.match(env, /POSTGRES_PASSWORD=[a-f0-9]{64}\n/)
   assert.match(env, /SELFHOST_HTTP_PORT=4200\n/)
-  const privateKey = createPrivateKey(readFileSync(path.join(dir, ".selfhost/rp.pk8")))
-  assert.equal(
-    createPublicKey(privateKey).export({ type: "spki", format: "der" }).toString("base64"),
-    readFileSync(path.join(dir, ".selfhost/rp-public.txt"), "utf8").trim(),
+  assert.match(env, /SECRETS_ENC_KEY=[A-Za-z0-9+/]{43}=\n/)
+  assert.match(env, /SETUP_TOKEN=[a-f0-9]{64}\n/)
+  assert.doesNotMatch(
+    env,
+    /INTYGA_(URL|SERVICE|OIDC|TRUST)/,
+    "the INTYGA binding is entered in the setup form, never generated",
   )
-  for (const f of [".env.selfhost", ".selfhost/rp.pk8"])
-    assert.equal(statSync(path.join(dir, f)).mode & 0o777, 0o600)
+  assert.equal(statSync(path.join(dir, ".env.selfhost")).mode & 0o777, 0o600)
   assert.throws(() => initialiseSelfHost(dir, "https://other.example.com"), /Refusing to rotate/)
   assert.equal(readFileSync(path.join(dir, ".env.selfhost"), "utf8"), env)
 })

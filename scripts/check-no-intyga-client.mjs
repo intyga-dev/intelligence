@@ -53,8 +53,8 @@ const FORBIDDEN_PATH_PATTERNS = [
  * environment. Tokens a customer pastes into a connector are a different thing entirely: they
  * arrive through the UI, are encrypted at rest, and are scoped by whoever issued them.
  *
- * The RP gate's own variables are absent on purpose — they name a platform-scoped key that can
- * only ask for a human approval.
+ * The service key's own variables (INTYGA_SERVICE_CLIENT_*) are absent on purpose — they name a
+ * SERVICE identity's API key that can only ask for a human approval.
  */
 const FORBIDDEN_ENV = [
   "METRICS_TOKEN",
@@ -118,7 +118,7 @@ for (const dir of roots) {
       if (CREDENTIAL_PATTERNS.some((p) => p.test(line))) {
         failures.push(
           `${relative}:${i + 1} reads one of Intyga's own secrets from the environment.\n` +
-            `    Allowed: the platform-scoped RP key, which can only ASK for a human approval,\n` +
+            `    Allowed: the SERVICE key, which can only ASK for a human approval,\n` +
             `    and tokens a customer pastes into a connector (encrypted, scoped by them).\n` +
             `    ${line.trim().slice(0, 120)}`,
         )

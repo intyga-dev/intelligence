@@ -21,8 +21,11 @@ export interface SessionActor {
   sessionId: string
   tenantId: string
   memberId: string
+  /** The person's email, as INTYGA names them. */
   externalId: string
   label: string
+  /** Their INTYGA workspace role at last sign-in: ADMIN administers Intelligence, MEMBER reads it. */
+  role: "ADMIN" | "MEMBER"
 }
 
 function hash(token: string): string {
@@ -52,7 +55,7 @@ export async function resolveSession(token: string | undefined): Promise<Session
   if (!token) return null
   const row = await prisma.session.findUnique({
     where: { tokenHash: hash(token) },
-    include: { member: { select: { id: true, externalId: true, label: true, active: true } } },
+    include: { member: { select: { id: true, externalId: true, label: true, active: true, role: true } } },
   })
   if (!row || row.revokedAt || row.expiresAt < new Date()) return null
   // A deactivated member's sessions stop working immediately, without needing to find and revoke
@@ -68,6 +71,7 @@ export async function resolveSession(token: string | undefined): Promise<Session
     tenantId: row.tenantId,
     memberId: row.member.id,
     externalId: row.member.externalId,
+    role: row.member.role === "ADMIN" ? "ADMIN" : "MEMBER",
     label: row.member.label,
   }
 }

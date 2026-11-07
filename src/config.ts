@@ -125,26 +125,23 @@ export const config = {
   },
 
   /**
-   * Intyga as Intelligence's Relying Party — REQUIRED, not optional.
+   * INTYGA bootstrap binding — environment variables seed the FIRST tenant before there is a row to
+   * read (scripts/bind-workspace.ts writes the row); a stored binding always wins. Unset means
+   * sign-in and privileged actions are refused outright; it never means they are allowed.
    *
-   * Intelligence has no authentication of its own. Admins are Intyga PLATFORM_SUBJECTs who enrol a
-   * passkey on Intelligence's own origin, and every privileged action is a hash-only signing
-   * ceremony against that passkey. Unset means privileged actions are refused outright; it never
-   * means they are allowed.
-   *
-   * The credential is a PLATFORM-scoped key (subjects:write, credentials:write, receipts:create,
-   * receipts:read) authenticating by private_key_jwt. It acts only on Intelligence's own subjects
-   * and cannot approve, bypass or read anything in Intyga's own plane.
+   * The service key (client id + secret) is an ordinary INTYGA API key for a SERVICE identity: it
+   * can ask for an approval under the workspace's own rules and nothing else. The trust anchor is
+   * the file exported from the console's Approval Rules page — public keys only.
    */
-  rp: {
-    baseUrl: process.env.INTYGA_RP_URL ?? null,
-    clientId: process.env.INTYGA_RP_CLIENT_ID ?? null,
-    /** PKCS#8 PEM. Newlines may be \n-escaped for environments that cannot carry them. */
-    privateKeyPem: (process.env.INTYGA_RP_PRIVATE_KEY ?? "").replace(/\\n/g, "\n") || null,
-    /** Our own WebAuthn RP ID and origin — the domain Intelligence is served from. */
-    rpId: process.env.INTYGA_RP_ID ?? null,
-    origin: process.env.INTYGA_RP_ORIGIN ?? null,
-    timeoutMs: num("INTYGA_RP_TIMEOUT_MS", 10_000),
+  intyga: {
+    baseUrl: process.env.INTYGA_URL ?? null,
+    workspaceId: process.env.INTYGA_WORKSPACE_ID ?? null,
+    oidcClientId: process.env.INTYGA_OIDC_CLIENT_ID ?? null,
+    serviceClientId: process.env.INTYGA_SERVICE_CLIENT_ID ?? null,
+    serviceSecret: process.env.INTYGA_SERVICE_CLIENT_SECRET ?? null,
+    /** The trust anchor file's JSON text. */
+    trustAnchor: process.env.INTYGA_TRUST_ANCHOR ?? null,
+    timeoutMs: num("INTYGA_TIMEOUT_MS", 10_000),
   },
 
   github: {

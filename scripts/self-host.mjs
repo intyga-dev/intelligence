@@ -14,11 +14,11 @@ for (let i = 0; i < args.length; i += 2) {
 }
 origin ??= `http://localhost:${port}`
 initialiseSelfHost(process.cwd(), origin, port)
-console.log(`Created .env.selfhost and .selfhost/ with new installation secrets and an INTYGA key pair.
+console.log(`Created .env.selfhost with new installation secrets.
 Start the stack:
   docker compose --env-file .env.selfhost -f compose.selfhost.yml up -d --build
 
 Open ${origin}. For HTTPS, first configure your reverse proxy to forward to 127.0.0.1:${port}.
-The setup form needs SETUP_TOKEN from .env.selfhost. Register Intelligence in your INTYGA workspace,
-using the public key in .selfhost/rp-public.txt. The private key stays in .selfhost/rp.pk8.
+The setup form needs SETUP_TOKEN from .env.selfhost, plus three things from your INTYGA console:
+an App sign-in client id, a service key and the exported trust anchor.
 See docs/SELF_HOST.md for the full walkthrough, upgrades and backups.`)

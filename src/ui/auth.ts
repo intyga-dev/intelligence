@@ -1,208 +1,37 @@
 import { authPage, esc } from "./layout.ts"
 
-// Sign-in and passkey enrolment.
+// Sign-in.
 //
 // Rendered on the onboarding shell (no navigation): showing a nav to someone who is not signed in
 // advertises the shape of the console and invites them to try each route.
+//
+// There is nothing to type but an address. INTYGA is the identity provider (core ADR 030): the form
+// posts the address, the server starts an OpenID Connect sign-in and sends the browser to INTYGA,
+// where the person approves it with the passkey they use for the console. The browser comes back to
+// /auth/callback with a code only this server can redeem.
 
-/** Shared base64url helpers — WebAuthn speaks ArrayBuffers, JSON does not. */
-const B64 = `
-function b64urlToBuf(s) {
-  if (typeof s !== "string") return new Uint8Array();
-  const p = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=");
-  return Uint8Array.from(atob(p), (c) => c.charCodeAt(0));
-}
-function bufToB64url(b) {
-  return btoa(String.fromCharCode(...new Uint8Array(b)))
-    .replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
-}
-function unwrapOptions(obj) {
-  let cur = obj;
-  while (cur && (cur.publicKey || cur.options)) {
-    cur = cur.publicKey || cur.options;
-  }
-  return cur || {};
-}
-`
-
-export function loginPage(o: { error?: string; prefill?: string } = {}): string {
+export function loginPage(o: { error?: string; prefill?: string; consoleUrl?: string } = {}): string {
   return authPage({
-    title: "Sign in",
-    lede: "No password — the passkey you approve production actions with.",
+    title: "Sign in with INTYGA",
+    lede: "No password — the passkey you use for your INTYGA workspace.",
     ...(o.error ? { error: o.error } : {}),
-    footnote: "No passkey yet? An administrator adds you first, then sends you an enrolment link.",
-    body: `
-<form id="login-form">
-  <div class="field">
-    <label>INTYGA subject id</label>
-    <input name="externalId" id="externalId" required autocomplete="username webauthn"
-           autofocus placeholder="ada" value="${esc(o.prefill ?? "")}">
-  </div>
-  <button class="primary" type="submit" id="go">Sign in with passkey</button>
-  <span id="msg" class="authMsg"></span>
-</form>
-
-<script>
-${B64}
-const form = document.getElementById("login-form");
-const msg = document.getElementById("msg");
-const go = document.getElementById("go");
-
-function fail(text) {
-  msg.textContent = text;
-  msg.style.color = "var(--red)";
-  go.disabled = false;
-  go.textContent = "Sign in with passkey";
-}
-
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  go.disabled = true;
-  go.textContent = "Starting…";
-  msg.textContent = "";
-  msg.style.color = "";
-  const externalId = document.getElementById("externalId").value.trim();
-  try {
-    const begin = await fetch("/login/begin", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ externalId }),
-    });
-    const b = await begin.json();
-    if (!begin.ok) throw new Error(b.error || "could not start sign-in");
-
-    go.textContent = "Waiting for your passkey…";
-    const o = unwrapOptions(b.options);
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        ...o,
-        challenge: b64urlToBuf(o.challenge),
-        allowCredentials: (o.allowCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
-      },
-    });
-
-    const done = await fetch("/login/complete", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        nonce: b.nonce,
-        assertion: {
-          id: assertion.id, rawId: bufToB64url(assertion.rawId), type: assertion.type,
-          response: {
-            clientDataJSON: bufToB64url(assertion.response.clientDataJSON),
-            authenticatorData: bufToB64url(assertion.response.authenticatorData),
-            signature: bufToB64url(assertion.response.signature),
-            userHandle: assertion.response.userHandle ? bufToB64url(assertion.response.userHandle) : null,
-          },
-        },
-      }),
-    });
-    const d = await done.json();
-    if (!done.ok) throw new Error(d.error || "sign-in refused");
-    go.textContent = "Signed in";
-    location.href = "/";
-  } catch (err) {
-    // A cancelled or timed-out passkey prompt throws NotAllowedError, which reads as a scary
-    // browser string. Say what actually happened.
-    fail(err && err.name === "NotAllowedError" ? "Passkey prompt dismissed." : (err.message || String(err)));
-  }
-});
-</script>`,
-  })
-}
-
-/**
- * Passkey enrolment, from an administrator's one-time link.
- *
- * Takes no parameters. The invite is in the URL fragment (`#invite=…`), which the browser never
- * sends to the server; this page reads it and posts it in a request body. Who is being enrolled is
- * decided server-side from the invite and shown here only once the ceremony has begun.
- */
-export function enrolPage(): string {
-  return authPage({
-    title: "Enrol a passkey",
-    lede: "One passkey on this domain. It signs you in here and approves changes.",
     footnote:
-      "This credential is registered against Intelligence's own Relying Party — it cannot approve anything in INTYGA itself.",
+      "Anyone who is a member of this instance's INTYGA workspace can sign in; workspace administrators " +
+      "administer Intelligence. No account here? Ask a workspace administrator to add you in INTYGA.",
     body: `
-<div class="field">
-  <label>Enrolling</label>
-  <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:9px 11px">
-    <code id="who">from your enrolment link</code>
+<form method="post" action="/login/begin">
+  <div class="field">
+    <label>Your INTYGA email</label>
+    <input name="email" id="email" type="email" required autocomplete="email" autofocus
+           placeholder="ada@example.com" value="${esc(o.prefill ?? "")}">
   </div>
-</div>
-<button class="primary" id="go">Enrol passkey</button>
-<span id="msg" class="authMsg"></span>
-
-<script>
-${B64}
-const go = document.getElementById("go");
-const msg = document.getElementById("msg");
-const invite = new URLSearchParams(location.hash.slice(1)).get("invite") || "";
-let externalId = "";
-// Drop the token from the address bar and history now that it is held in memory.
-if (invite) history.replaceState(null, "", location.pathname);
-
-function fail(text) {
-  msg.textContent = text;
-  msg.style.color = "var(--red)";
-  go.disabled = false;
-  go.textContent = "Enrol passkey";
-}
-
-if (!invite) {
-  go.disabled = true;
-  msg.textContent = "Open the enrolment link an administrator sent you. This page does nothing without one.";
-  msg.style.color = "var(--red)";
-}
-
-go.addEventListener("click", async () => {
-  go.disabled = true;
-  go.textContent = "Starting…";
-  msg.textContent = "";
-  msg.style.color = "";
-  try {
-    const begin = await fetch("/members/enrol/begin", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ invite }),
-    });
-    const b = await begin.json();
-    if (!begin.ok) throw new Error(b.error || "could not start enrolment");
-    externalId = b.externalId;
-    document.getElementById("who").textContent = b.label + " (" + b.externalId + ")";
-
-    go.textContent = "Follow your device's prompt…";
-    const o = unwrapOptions(b.options);
-    const cred = await navigator.credentials.create({
-      publicKey: {
-        ...o,
-        challenge: b64urlToBuf(o.challenge),
-        user: { ...(o.user || {}), id: b64urlToBuf(o.user && o.user.id) },
-        excludeCredentials: (o.excludeCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
-      },
-    });
-
-    const done = await fetch("/members/enrol/complete", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        invite,
-        response: {
-          id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
-          response: {
-            clientDataJSON: bufToB64url(cred.response.clientDataJSON),
-            attestationObject: bufToB64url(cred.response.attestationObject),
-          },
-        },
-      }),
-    });
-    const d = await done.json();
-    if (!done.ok) throw new Error(d.error || "enrolment refused");
-    go.textContent = "Enrolled";
-    msg.textContent = "Taking you to sign in…";
-    msg.style.color = "var(--green)";
-    setTimeout(() => (location.href = "/login?id=" + encodeURIComponent(externalId)), 900);
-  } catch (err) {
-    fail(err && err.name === "NotAllowedError" ? "Passkey prompt dismissed." : (err.message || String(err)));
-  }
-});
-</script>`,
+  <button class="primary" type="submit" id="go">Continue to INTYGA</button>
+</form>${
+      o.consoleUrl
+        ? `<p class="mut" style="margin-top:14px;font-size:12.5px">You will approve the sign-in at <code>${esc(
+            o.consoleUrl,
+          )}</code> and come straight back.</p>`
+        : ""
+    }`,
   })
 }

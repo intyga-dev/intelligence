@@ -13,6 +13,9 @@ importers:
 
   .:
     dependencies:
+      '@intyga/sdk':
+        specifier: ^2.3.0
+        version: 2.3.0
       '@prisma/adapter-pg':
         specifier: ^7.10.0
         version: 7.10.0
@@ -22,6 +25,9 @@ importers:
       fastify:
         specifier: 5.12.5
         version: 5.12.5
+      jose:
+        specifier: ^6.2.15
+        version: 6.2.15
       pg:
         specifier: ^8.23.0
         version: 8.23.0
@@ -297,6 +303,15 @@ packages:
 
   '@fastify/proxy-addr@5.1.1':
     resolution: {integrity: sha512-zv07Y9GEuDsJPegZoDFd4SDWaZOW8N2pa0GSrYmKpId/tjt1Hgo3BjZBVjdVpfVrHaA+Qv5jawtS2O50J5xM9g==}
+
+  '@intyga/sdk@2.3.0':
+    resolution: {integrity: sha512-R07W6kU34jc/cUE+kwcu688/tvbWFYTKv29H2SjWWFNfJ2CzSnMLqDhVVpyQ3SJv8be/z/hxt1++AC8gf8GAwQ==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  '@intyga/verify@2.3.0':
+    resolution: {integrity: sha512-QWUjFQcy29u/ODFwMV4v2omvHkLg0N40pjuJ2GCgzNe7XcqjTDUq4s0z4NrYWSTlX88XkOdb1QNCojokRPCWVQ==}
+    engines: {node: '>=18'}
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
@@ -762,6 +777,9 @@ packages:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
 
+  jose@6.2.15:
+    resolution: {integrity: sha512-qdF6ewcZARtef63fJ9AKKZPgxw+t7USH6HLXYcD4CrdmSvDp79rpJSPFEKc90QBeGS63u1KQtN2MZQHC0yDIzA==}
+
   json-schema-ref-resolver@3.0.0:
     resolution: {integrity: sha512-hOrZIVL5jyYFjzk7+y7n5JDzGlU8rfWDuYyHwGa2WA8/pcmMHezp2xsVwxrebD/Q9t8Nc5DboieySDpCp4WG4A==}
 
@@ -1200,6 +1218,12 @@ snapshots:
     dependencies:
       '@fastify/forwarded': 3.0.2
       ipaddr.js: 2.5.0
+
+  '@intyga/sdk@2.3.0':
+    dependencies:
+      '@intyga/verify': 2.3.0
+
+  '@intyga/verify@2.3.0': {}
 
   '@pinojs/redact@0.4.0': {}
 
@@ -1741,6 +1765,8 @@ snapshots:
   isexe@2.0.0: {}
 
   jiti@2.7.0: {}
+
+  jose@6.2.15: {}
 
   json-schema-ref-resolver@3.0.0:
     dependencies:

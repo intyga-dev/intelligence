@@ -47,18 +47,18 @@ export function onboardingPage(
 </p>`,
     })
   }
+  const callback = o.publicUrl ? `${o.publicUrl}/auth/callback` : "https://<this instance>/auth/callback"
   return authPage({
     title: "Connect your INTYGA workspace",
-    lede: "Free operational insights on your infrastructure. Sign in and approve changes with INTYGA.",
+    lede: "Free operational insights on your infrastructure. Your team signs in and approves changes with INTYGA.",
     width: "wide",
     ...(o.error ? { error: o.error } : {}),
     footnote:
-      "Nothing is watched until you switch a connector on. Connecting only establishes who may sign in.",
+      "Intelligence has no accounts of its own: your INTYGA workspace's members are its users, and its " +
+      "administrators are the workspace's administrators.",
     body: `
 <div class="authSection">
-  <h2>Start with a free INTYGA workspace</h2>
-  <p>Intelligence is a first-party integration, outside the Embedded plan gate.
-    Register your instance on its own domain, then connect it below.</p>
+  <p>Three things from your INTYGA console, then whoever is an administrator there signs in here.</p>
   <p><a href="${esc(consoleUrl)}/login?intent=intelligence" target="_blank" rel="noopener noreferrer">Create or open your INTYGA workspace ↗</a>
     · <a href="/demo">Explore an example incident</a></p>
 </div>
@@ -72,52 +72,55 @@ export function onboardingPage(
     <div class="field"><label>Setup token</label>
       <input name="setupToken" type="password" required autocomplete="off"></div>
   </div>
-
   <div class="authSection">
     <h2>Workspace</h2>
-    <p>
-      In your INTYGA console, open <a href="${esc(consoleUrl)}/integrations/intelligence" target="_blank" rel="noopener noreferrer">Intelligence integration ↗</a> and register this instance,
-      then create a platform API key with <code>subjects:write</code>, <code>credentials:write</code>,
-      <code>receipts:create</code> and <code>receipts:read</code>. Those scopes act only on
-      Intelligence's own subjects — none of them can approve anything in INTYGA.
-    </p>
     <div class="grid g2">
-      <div class="field"><label>INTYGA base URL</label>
+      <div class="field"><label>INTYGA gateway URL</label>
         <input name="baseUrl" required placeholder="https://api.intyga.com"></div>
-      <div class="field"><label>Platform client ID</label>
-        <input name="clientId" required placeholder="cid_…"></div>
-      <div class="field"><label>RP ID — a bare host</label>
-        <input name="rpId" required placeholder="intelligence.example.com" value="${esc(o.publicUrl ? new URL(o.publicUrl).hostname : "")}">
+      <div class="field"><label>INTYGA console URL</label>
+        <input name="consoleUrl" required placeholder="https://app.intyga.com" value="${esc(consoleUrl)}"></div>
+      <div class="field"><label>Workspace ID</label>
+        <input name="workspaceId" required placeholder="shown under Settings in the console"></div>
+      <div class="field"><label>This instance's origin</label>
+        <input name="origin" placeholder="https://intelligence.example.com" value="${esc(o.publicUrl ?? "")}">
         <div class="mut" style="font-size:11.5px;margin-top:5px">
-          A hostname only: no scheme, no port, no path. Use <code>localhost</code> when developing.</div></div>
-      <div class="field"><label>Origin — the full URL</label>
-        <input name="origin" required placeholder="https://intelligence.example.com" value="${esc(o.publicUrl ?? "")}">
-        <div class="mut" style="font-size:11.5px;margin-top:5px">
-          Scheme and port included, e.g. <code>http://localhost:4100</code>. Its host must equal the
-          RP ID or be a subdomain of it.</div></div>
+          Scheme and port included. Sign-in returns here.</div></div>
     </div>
-    <div class="field"><label>Private key — PKCS#8 PEM</label>
-      <textarea name="privateKey" rows="3" required
-        placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
-      <div class="mut" style="font-size:11.5px;margin-top:5px">
-        Encrypted at rest and never returned by the API.</div></div>
   </div>
-
   <div class="authSection">
-    <h2>First administrator</h2>
+    <h2>1 · Sign-in — an OIDC client</h2>
     <p>
-      Without one, nothing here could ever be approved — including adding one. Usually you: the next
-      page enrols their passkey on this device.
+      In the console, <b>Integrations → App sign-in</b>: register this instance with the redirect URI
+      <code>${esc(callback)}</code>. Paste the client ID it shows (there is no secret).
+    </p>
+    <div class="field"><label>OIDC client ID</label>
+      <input name="oidcClientId" required placeholder="oidc_…"></div>
+  </div>
+  <div class="authSection">
+    <h2>2 · Approvals — a service key</h2>
+    <p>
+      In the console, <b>API Keys → Create a service and its key</b>. The key can only <i>ask</i> for
+      an approval; every privileged change here is then approved under your workspace's rules by its
+      members, at the console or on their phone.
     </p>
     <div class="grid g2">
-      <div class="field"><label>INTYGA subject id</label>
-        <input name="adminExternalId" required placeholder="ada"></div>
-      <div class="field"><label>Name</label>
-        <input name="adminLabel" required placeholder="Ada Lovelace"></div>
+      <div class="field"><label>Service client ID</label>
+        <input name="serviceClientId" required placeholder="cid_…"></div>
+      <div class="field"><label>Service secret</label>
+        <input name="serviceSecret" type="password" required autocomplete="off">
+        <div class="mut" style="font-size:11.5px;margin-top:5px">Encrypted at rest and never returned by the API.</div></div>
     </div>
   </div>
-
-  <button class="primary" type="submit" style="margin-top:6px">Connect workspace and enrol passkey</button>
+  <div class="authSection">
+    <h2>3 · Trust — the approvers' keys</h2>
+    <p>
+      In the console, <b>Approval Rules → Export trust anchor</b>. Intelligence verifies every receipt
+      against these keys itself, offline, before anything runs. Re-export it when approvers change.
+    </p>
+    <div class="field"><label>Trust anchor (JSON)</label>
+      <textarea name="trustAnchor" rows="4" required placeholder='{"type":"intyga-trust-anchor", …}'></textarea></div>
+  </div>
+  <button class="primary" type="submit" style="margin-top:6px">Connect workspace</button>
 </form>`,
   })
 }
@@ -827,73 +830,58 @@ export function judgmentPage(o: {
 }
 
 export function membersPage(o: {
-  rows: { externalId: string; label: string; enrolledAt: Date | null; active: boolean }[]
+  rows: { externalId: string; label: string; role: string; lastLoginAt: Date | null; active: boolean }[]
+  consoleUrl: string
   counts: { findings: number; alerts: number; connectors: number }
   /** Who is signed in — rendered in the sidebar with the sign-out link. */
   actor?: { label: string; externalId: string }
 }): string {
   return page({
     title: "Members",
-    lede: "Administrators are INTYGA platform subjects. A member cannot approve anything until they enrol a passkey.",
+    lede: "Everyone who has signed in with INTYGA. Membership and roles are the workspace's, managed there.",
     path: "/members",
     counts: o.counts,
     ...(o.actor ? { actor: o.actor } : {}),
     body: `
 <div class="card"><table>
-<thead><tr><th>Member</th><th>INTYGA subject</th><th>Passkey</th><th style="width:280px"></th></tr></thead>
+<thead><tr><th>Member</th><th>INTYGA email</th><th>Role</th><th>Last sign-in</th></tr></thead>
 <tbody>${o.rows
       .map(
         (m) => `<tr><td><b>${esc(m.label)}</b></td><td><code>${esc(m.externalId)}</code></td>
     <td>${
-      m.enrolledAt ? `<span class="badge on">enrolled</span>` : `<span class="badge">not enrolled</span>`
+      !m.active
+        ? `<span class="mut">no longer a member</span>`
+        : m.role === "ADMIN"
+          ? `<span class="badge on">administrator</span>`
+          : `<span class="badge">member</span>`
     }</td>
-    <td>${
-      m.active
-        ? // Enrolment is by one-time link only, and issuing one is signed: the link is the power to
-          // add a passkey to this member. Also how a member adds a second device or recovers one.
-          `${actionBtn({
-            label: "Enrolment link",
-            action: "intelligence.member.invite",
-            params: { externalId: m.externalId },
-          })} ${actionBtn({
-            label: "Remove",
-            action: "intelligence.member.remove",
-            params: { externalId: m.externalId },
-            cls: "danger",
-          })}`
-        : `<span class="mut">removed</span>`
-    }</td></tr>`,
+    <td>${m.lastLoginAt ? esc(ago(m.lastLoginAt)) : "—"}</td></tr>`,
       )
-      .join("")}</tbody></table></div>
-
-<form class="card" id="add-member">
-  <h2>Add administrator</h2>
-  <div class="grid g2">
-    <div class="field"><label>INTYGA subject id</label><input name="externalId" required placeholder="ada"></div>
-    <div class="field"><label>Name</label><input name="label" required placeholder="Ada Lovelace"></div>
-  </div>
-  <button class="primary" type="submit">Add — requires approval</button>
-</form>
-<script>
-document.getElementById("add-member").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const f = new FormData(e.target);
-  const b = document.createElement("button");
-  b.dataset.action = "intelligence.member.add";
-  b.dataset.params = JSON.stringify({ externalId: f.get("externalId"), label: f.get("label") });
-  b.style.display = "none"; document.body.appendChild(b); b.click(); b.remove();
-});
-</script>`,
+      .join("")}</tbody></table>
+  ${o.rows.length === 0 ? `<p class="mut" style="margin:12px 0 0">Nobody has signed in yet.</p>` : ""}
+</div>
+<div class="card">
+  <h2>Adding people</h2>
+  <p class="mut" style="font-size:13px;margin:0">
+    Add them to your INTYGA workspace — <a href="${esc(o.consoleUrl)}/directory" target="_blank" rel="noopener noreferrer">Directory ↗</a>.
+    Workspace <b>administrators</b> can change anything here and approve privileged actions under the
+    workspace's rules; <b>members</b> can read findings and services. A person's role is read from
+    INTYGA at each sign-in; removing them from the workspace ends their access here at the next request.
+  </p>
+</div>`,
   })
 }
 
 export function settingsPage(o: {
   binding: {
     baseUrl: string | null
-    clientId: string | null
-    rpId: string | null
+    consoleUrl: string | null
+    workspaceId: string | null
+    oidcClientId: string | null
+    serviceClientId: string | null
+    hasSecret: boolean
+    trustAnchorAt: Date | null
     origin: string | null
-    hasKey: boolean
   }
   retentionDays: number
   counts: { findings: number; alerts: number; connectors: number }
@@ -901,31 +889,10 @@ export function settingsPage(o: {
   actor?: { label: string; externalId: string }
 }): string {
   const b = o.binding
-  const bound = Boolean(b.hasKey && b.baseUrl)
-
-  // Unbound, the form is the SIGNUP: there is no tenant yet, so nobody exists who could approve it.
-  // Bound, the same fields become a signed action — you must still be who you were to say who you
-  // will be. The key is never part of the signed parameters; see the action registry for why.
-  const fields = `
-  <div class="grid g2">
-    <div class="field"><label>INTYGA base URL</label>
-      <input name="baseUrl" id="s-baseUrl" required placeholder="https://api.intyga.com"
-             value="${esc(b.baseUrl ?? "")}"></div>
-    <div class="field"><label>Platform client ID</label>
-      <input name="clientId" id="s-clientId" required placeholder="cid_…"
-             value="${esc(b.clientId ?? "")}"></div>
-    <div class="field"><label>RP ID — a bare host</label>
-      <input name="rpId" id="s-rpId" required placeholder="intelligence.example.com"
-             value="${esc(b.rpId ?? "")}">
-      <div class="mut" style="font-size:11.5px;margin-top:5px">
-        Hostname only — no scheme, no port. <code>localhost</code> when developing.</div></div>
-    <div class="field"><label>Origin — the full URL</label>
-      <input name="origin" id="s-origin" required placeholder="https://intelligence.example.com"
-             value="${esc(b.origin ?? "")}">
-      <div class="mut" style="font-size:11.5px;margin-top:5px">
-        Its host must equal the RP ID or be a subdomain of it.</div></div>
-  </div>`
-
+  const bound = Boolean(b.baseUrl && b.oidcClientId)
+  // Repointing the workspace is an APPROVED action — you must still be who you were to say who you
+  // will be. The secret and the trust anchor are never part of the signed parameters; see the action
+  // registry for why. They are replaced below, by an administrator, without a signature.
   return page({
     title: "Settings",
     lede: "The INTYGA workspace this service runs on, and what it keeps.",
@@ -939,51 +906,70 @@ export function settingsPage(o: {
     <span class="badge ${bound ? "on" : "off"}">${bound ? "connected" : "not connected"}</span>
   </div>
   <p class="mut" style="font-size:13px;margin:0 0 14px">
-    Intelligence has no login of its own — your administrators are platform subjects in this
-    workspace, and every privileged change here is signed with their passkey. Repointing it is the
-    one change that could hand this tenant to someone else, so once connected it requires approval
-    from the workspace you are leaving.
+    Intelligence has no login of its own — this workspace's members sign in here with INTYGA, its
+    administrators administer Intelligence, and every privileged change is approved under its rules.
+    Repointing it is the one change that could hand this tenant to someone else, so it requires
+    approval from the workspace you are leaving.
   </p>
-
-  ${
-    bound
-      ? `<form id="rebind-form">${fields}
-      <div class="row">
-        <button type="button" class="ghost" id="test-conn">Test connection</button>
-        <button type="submit" class="danger">Repoint workspace — requires approval</button>
-        <span id="test-result" class="mut" style="font-size:12px"></span>
-      </div>
-    </form>`
-      : `<form method="post" action="/settings/bind">${fields}
-      <div class="field"><label>Private key — PKCS#8 PEM, for private_key_jwt</label>
-        <textarea name="privateKey" rows="4" required
-          placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
-        <div class="mut" style="font-size:11.5px;margin-top:4px">
-          Encrypted at rest and never returned by the API.</div></div>
-      <button class="primary" type="submit">Connect workspace</button>
-    </form>`
-  }
+  <table style="margin-bottom:12px">
+    <tr><th>Gateway</th><td><code>${esc(b.baseUrl ?? "—")}</code></td></tr>
+    <tr><th>Console</th><td><code>${esc(b.consoleUrl ?? "—")}</code></td></tr>
+    <tr><th>Workspace ID</th><td><code>${esc(b.workspaceId ?? "—")}</code></td></tr>
+    <tr><th>OIDC client</th><td><code>${esc(b.oidcClientId ?? "—")}</code> · redirect <code>${esc(
+      b.origin ? `${b.origin}/auth/callback` : "—",
+    )}</code></td></tr>
+    <tr><th>Service key</th><td><code>${esc(b.serviceClientId ?? "—")}</code> · secret ${
+      b.hasSecret ? "stored" : "<b>missing</b>"
+    }</td></tr>
+    <tr><th>Trust anchor</th><td>${
+      b.trustAnchorAt ? `stored ${esc(ago(b.trustAnchorAt))}` : "<b>missing</b>"
+    } — re-export it whenever the workspace's approvers change</td></tr>
+  </table>
+  <div class="row">
+    <button id="test-binding">Test connection</button>
+    <span id="test-result" class="mut" style="font-size:13px"></span>
+    ${actionBtn({
+      label: "Repoint to another workspace…",
+      action: "intelligence.workspace.rebind",
+      params: {
+        baseUrl: b.baseUrl ?? "",
+        consoleUrl: b.consoleUrl ?? "",
+        workspaceId: b.workspaceId ?? "",
+        oidcClientId: b.oidcClientId ?? "",
+        serviceClientId: b.serviceClientId ?? "",
+      },
+      cls: "danger",
+    })}
+  </div>
+  <script>
+  document.getElementById("test-binding").addEventListener("click", async () => {
+    const out = document.getElementById("test-result");
+    out.textContent = "Testing…";
+    const r = await fetch("/settings/test", { method: "POST", headers: { accept: "application/json" } });
+    const b = await r.json().catch(() => ({ ok: false, error: "no answer" }));
+    out.textContent = b.ok ? "Connected: the service key is accepted." : (b.error || "failed");
+  });
+  </script>
 </div>
-
-${
-  bound
-    ? `<div class="card">
-  <h2>Signing key</h2>
+<div class="card">
+  <h2>Credentials</h2>
   <p class="mut" style="font-size:13px;margin-top:0">
-    Rotate the private_key_jwt key without changing which workspace this tenant belongs to. Not a
-    signed action: it proves possession of a NEW key against a workspace that already trusts you,
-    and a key you cannot use is a key you cannot rotate with.
+    Rotate the service secret or store a freshly exported trust anchor without changing which
+    workspace this tenant belongs to. Not an approved action: a secret the workspace does not know
+    simply fails at the next exchange. An administrator can paste arbitrary approver keys; a bad
+    anchor makes actions fail. It can never skip approval: INTYGA still checks the approval when
+    Intelligence redeems it, before the action runs. Administrators only.
   </p>
-  <form method="post" action="/settings/key">
-    <div class="field"><label>New private key — PKCS#8 PEM</label>
-      <textarea name="privateKey" rows="4" required
-        placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea></div>
-    <button type="submit">Replace key</button>
+  <form method="post" action="/settings/credentials">
+    <div class="grid g2">
+      <div class="field"><label>New service secret (optional)</label>
+        <input name="serviceSecret" type="password" autocomplete="off"></div>
+      <div class="field"><label>Trust anchor JSON (optional)</label>
+        <textarea name="trustAnchor" rows="3" placeholder='{"type":"intyga-trust-anchor", …}'></textarea></div>
+    </div>
+    <button type="submit">Save</button>
   </form>
-</div>`
-    : ""
-}
-
+</div>
 <div class="card">
   <h2>Data retention</h2>
   <p class="mut" style="font-size:13px;margin-top:0">
@@ -1010,41 +996,13 @@ ${
 <div class="card">
   <h2>Trust boundary</h2>
   <p class="mut" style="font-size:13px;margin:0">
-    Intelligence holds platform-scoped credentials that act only on its own subjects. It cannot
-    approve anything in INTYGA, read its audit log, or change policy — and signing is hash-only, so
-    INTYGA receives a digest and never learns what was approved here. A build-time check fails the
-    build if that stops being true.
+    Intelligence holds one INTYGA credential: a service key that can open an approval and nothing
+    else. It cannot approve anything, read the workspace's ledger, or change its rules. Every
+    privileged change here is signed by the workspace's own members under the workspace's own
+    rules, and the receipt is verified on this server, against the exported approver keys, before
+    anything runs. A build-time check (<code>pnpm check:boundary</code>) fails the build if a
+    stronger credential ever appears.
   </p>
-</div>
-
-<script>
-const testBtn = document.getElementById("test-conn");
-if (testBtn) testBtn.addEventListener("click", async () => {
-  const out = document.getElementById("test-result");
-  testBtn.disabled = true; out.textContent = "Testing…"; out.style.color = "";
-  try {
-    const r = await fetch("/settings/test", { method: "POST" });
-    const b = await r.json();
-    out.textContent = b.ok ? "Reached INTYGA and exchanged a token." : (b.error || "Failed.");
-    out.style.color = b.ok ? "var(--green)" : "var(--red)";
-  } catch (e) { out.textContent = String(e); out.style.color = "var(--red)"; }
-  testBtn.disabled = false;
-});
-
-const rebind = document.getElementById("rebind-form");
-if (rebind) rebind.addEventListener("submit", (e) => {
-  e.preventDefault();
-  // Routed through the same passkey ceremony as every other privileged change.
-  const b = document.createElement("button");
-  b.dataset.action = "intelligence.workspace.rebind";
-  b.dataset.params = JSON.stringify({
-    baseUrl: document.getElementById("s-baseUrl").value.trim(),
-    clientId: document.getElementById("s-clientId").value.trim(),
-    rpId: document.getElementById("s-rpId").value.trim(),
-    origin: document.getElementById("s-origin").value.trim(),
-  });
-  b.style.display = "none"; document.body.appendChild(b); b.click(); b.remove();
-});
-</script>`,
+</div>`,
   })
 }

@@ -172,7 +172,7 @@ export async function deliverAlerts(now: Date = new Date(), send: Send = fetch):
   const report: DeliveryReport = { attempted: 0, delivered: 0, failed: 0 }
   const rules = await prisma.alertRule.findMany({
     where: { active: true, channel: { in: ["webhook", "slack"] } },
-    include: { tenant: { select: { intygaOrigin: true } } },
+    include: { tenant: { select: { publicOrigin: true } } },
   })
 
   for (const rule of rules) {
@@ -227,7 +227,7 @@ async function attempt(
     channel: string
     targetCipher: string
     signingSecretCipher: string | null
-    tenant: { intygaOrigin: string | null }
+    tenant: { publicOrigin: string | null }
   },
   findings: AlertFinding[],
   more: boolean,
@@ -241,7 +241,7 @@ async function attempt(
     ruleName: rule.name,
     findings,
     more,
-    consoleOrigin: rule.tenant.intygaOrigin,
+    consoleOrigin: rule.tenant.publicOrigin,
     now,
   })
   const headers: Record<string, string> = {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { after, before, beforeEach, test } from "node:test"
 import type { FastifyInstance } from "fastify"
 
-// Same isolated, opt-in database contract as setup-and-enrol.test.ts and CI.
+// Same isolated, opt-in database contract as setup-and-sign-in.test.ts and CI.
 const TEST_URL = process.env.TEST_DATABASE_URL
 const skip = TEST_URL ? false : "TEST_DATABASE_URL is not set"
 if (TEST_URL) {
@@ -31,11 +31,16 @@ beforeEach(async () => {
     SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`
   await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(", ")} CASCADE`)
   const tenant = await prisma.tenant.create({
-    data: { slug: "triage", name: "Triage", intygaKeyCipher: "test-binding" },
+    data: {
+      slug: "triage",
+      name: "Triage",
+      intygaBaseUrl: "http://127.0.0.1:9",
+      intygaOidcClientId: "oidc_test",
+    },
   })
   tenantId = tenant.id
   const member = await prisma.member.create({
-    data: { tenantId, externalId: "investigator", label: "Investigator", enrolledAt: new Date() },
+    data: { tenantId, externalId: "investigator@example.test", label: "Investigator", role: "ADMIN" },
   })
   const sessions = await import("../auth/session.ts")
   cookie = `${sessions.COOKIE}=${await sessions.createSession({ tenantId, memberId: member.id })}`
@@ -133,7 +138,7 @@ test("services refuse cross-tenant assignment and unsigned creation; demo disclo
     headers: { cookie },
     payload: { nonce: "invented", assertion: {} },
   })
-  assert.equal(forged.statusCode, 400)
+  assert.equal(forged.statusCode, 404, "the old browser-supplied completion route no longer exists")
   assert.equal(await prisma.service.count({ where: { tenantId } }), 0)
   const demo = await app.inject({ method: "GET", url: "/demo" })
   assert.equal(demo.statusCode, 200)
@@ -196,7 +201,7 @@ test("feedback persists notes, uses the session actor and keeps resolved finding
   const record = (await get(`/api/findings?q=${f.id}`)).json().findings[0]
   assert.equal(record.status, "resolved")
   assert.equal(record.feedback[0].note, note)
-  assert.equal(record.feedback[0].actor, "investigator")
+  assert.equal(record.feedback[0].actor, "investigator@example.test")
   const page = await get(`/findings?status=all&q=${f.id}`)
   assert.match(page.body, /Authorization failures/)
   assert.match(page.body, /&lt;script&gt;alert/)

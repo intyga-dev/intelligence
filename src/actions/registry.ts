@@ -1,11 +1,24 @@
 import { z } from "zod"
 import { newSigningSecret, parseTarget } from "../alerts/deliver.ts"
-import { issueInvite } from "../auth/invite.ts"
 import { DETECTORS } from "../domain/detectors/index.ts"
 import { isProdLike } from "../config.ts"
-import type { GatedAction } from "../gate/intent.ts"
 import { prisma } from "../store/client.ts"
 import { decryptSecret, encryptSecret } from "../store/crypto.ts"
+
+/** Privileged Intelligence actions. The value is the signed actionType, so it binds the action to its parameters. */
+export type GatedAction =
+  | "intelligence.service.create"
+  | "intelligence.connector.assign-service"
+  | "intelligence.connector.activate"
+  | "intelligence.connector.deactivate"
+  | "intelligence.judgment.enable"
+  | "intelligence.judgment.disable"
+  | "intelligence.data.purge"
+  | "intelligence.workspace.rebind"
+  | "intelligence.alert.activate"
+  | "intelligence.alert.deactivate"
+  | "intelligence.detector.enable"
+  | "intelligence.detector.disable"
 
 // Every privileged action in one table.
 //
@@ -29,27 +42,8 @@ export interface ActionDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   impact: "low" | "medium" | "high"
 }
 
-/**
- * What an action hands back to the approver who ran it, beyond "applied".
- *
- * Today only an enrolment invite: minted INSIDE `run`, after the signature is redeemed, so the token
- * never appears in the signed (and stored-in-the-clear) parameters. Shown once in the response and
- * stored only as a hash.
- */
-export interface ActionOutcome {
-  invite?: { token: string; label: string; expiresAt: string }
-}
-
-/** Issue an invite for an active member, or fail the action if there is none. */
-async function inviteFor(tenantId: string, externalId: string): Promise<ActionOutcome> {
-  const member = await prisma.member.findFirst({
-    where: { tenantId, externalId, active: true },
-    select: { id: true, label: true },
-  })
-  if (!member) throw new Error("no active administrator with that subject id")
-  const invite = await issueInvite(prisma, { tenantId, memberId: member.id })
-  return { invite: { token: invite.token, label: member.label, expiresAt: invite.expiresAt.toISOString() } }
-}
+/** What an action hands back beyond "applied". Nothing today; kept so `run` has a stable shape. */
+export type ActionOutcome = { note?: string }
 
 /**
  * Identity helper that preserves each action's inferred parameter type.
@@ -198,95 +192,59 @@ export const ACTIONS = {
     },
   }),
 
-  "intelligence.member.add": defineAction({
-    impact: "high",
-    schema: z.object({
-      externalId: z
-        .string()
-        .min(1)
-        .max(200)
-        .regex(/^[A-Za-z0-9._:@+=-]+$/),
-      label: z.string().min(1).max(200),
-    }),
-    summary: (p: { label: string }) =>
-      `Add "${p.label}" as an Intelligence administrator and create a one-time enrolment link for ` +
-      "them. They will be able to approve privileged actions once they enrol a passkey with it.",
-    run: async (tenantId, p: { externalId: string; label: string }) => {
-      await prisma.member.upsert({
-        where: { tenantId_externalId: { tenantId, externalId: p.externalId } },
-        create: { tenantId, externalId: p.externalId, label: p.label },
-        update: { label: p.label, active: true },
-      })
-      return inviteFor(tenantId, p.externalId)
-    },
-  }),
-
   /**
-   * A fresh enrolment link for an existing administrator: never enrolled, a lost link, a new device.
+   * Repoint this tenant at a different INTYGA workspace.
    *
-   * High impact, and signed, because the link is the power to add a passkey to that account — the
-   * same power as approving as them. Issuing one supersedes any link still open for that member.
-   */
-  "intelligence.member.invite": defineAction({
-    impact: "high",
-    schema: z.object({ externalId: z.string().min(1).max(200) }),
-    summary: (p: { externalId: string }) =>
-      `Create a one-time enrolment link for administrator "${p.externalId}". Whoever opens it can add ` +
-      "a passkey to that administrator — send it only to them. Any earlier link for them stops working.",
-    run: async (tenantId, p: { externalId: string }) => inviteFor(tenantId, p.externalId),
-  }),
-
-  /**
-   * Repoint this tenant at a different Intyga workspace.
-   *
-   * The most consequential action here: the workspace is what authenticates every administrator,
-   * so rebinding it is the one change that could hand control of this tenant to someone else. It
-   * is therefore signed by the CURRENT workspace's passkey — you must still be who you were to say
+   * The most consequential action here: the workspace is what authenticates every member, so
+   * rebinding it is the one change that could hand control of this tenant to someone else. It is
+   * therefore approved under the CURRENT workspace's rules — you must still be who you were to say
    * who you will be.
    *
-   * The private key is deliberately NOT a parameter. Signed parameters are stored in PendingAction
-   * in the clear, so routing a credential through the digest would write it to disk unencrypted —
-   * worse than what the signature was protecting. The key is submitted separately and encrypted on
+   * The service secret and the trust anchor are deliberately NOT parameters: signed parameters are
+   * stored in PendingAction in the clear, so routing the secret through them would write it to disk
+   * unencrypted. They are submitted separately (Settings → credentials) and the secret encrypted on
    * arrival; what is signed is the workspace IDENTITY, which is what actually matters.
    */
   "intelligence.workspace.rebind": defineAction({
     impact: "high",
     schema: z.object({
       baseUrl: z.url(),
-      clientId: z.string().min(1).max(200),
-      rpId: z.string().min(1).max(253),
-      origin: z.url(),
+      consoleUrl: z.url(),
+      workspaceId: z.string().min(1).max(200),
+      oidcClientId: z.string().min(1).max(200),
+      serviceClientId: z.string().min(1).max(200),
     }),
-    summary: (p: { baseUrl: string; rpId: string }) =>
-      `Repoint Intelligence at a DIFFERENT Intyga workspace (${p.baseUrl}, RP ${p.rpId}). ` +
-      "Administrators of the current workspace will no longer be able to approve anything here.",
-    run: async (tenantId, p: { baseUrl: string; clientId: string; rpId: string; origin: string }) => {
+    summary: (p: { baseUrl: string; workspaceId: string }) =>
+      `Repoint Intelligence at a DIFFERENT INTYGA workspace (${p.baseUrl}, workspace ${p.workspaceId}). ` +
+      "Members of the current workspace will no longer be able to sign in or approve anything here.",
+    run: async (
+      tenantId,
+      p: {
+        baseUrl: string
+        consoleUrl: string
+        workspaceId: string
+        oidcClientId: string
+        serviceClientId: string
+      },
+    ) => {
       await prisma.tenant.update({
         where: { id: tenantId },
         data: {
           intygaBaseUrl: p.baseUrl,
-          intygaClientId: p.clientId,
-          intygaRpId: p.rpId,
-          intygaOrigin: p.origin,
+          intygaConsoleUrl: p.consoleUrl,
+          intygaWorkspaceId: p.workspaceId,
+          intygaOidcClientId: p.oidcClientId,
+          intygaServiceClientId: p.serviceClientId,
         },
       })
-    },
-  }),
-
-  "intelligence.member.remove": defineAction({
-    impact: "high",
-    schema: z.object({ externalId: z.string().min(1).max(200) }),
-    summary: (p: { externalId: string }) =>
-      `Remove administrator "${p.externalId}". They will no longer be able to approve anything here.`,
-    run: async (tenantId, p: { externalId: string }) => {
-      const res = await prisma.member.updateMany({
-        where: { tenantId, externalId: p.externalId },
-        data: { active: false },
+      // Everyone signed in belonged to the old workspace.
+      await prisma.session.updateMany({
+        where: { tenantId, revokedAt: null },
+        data: { revokedAt: new Date() },
       })
-      if (res.count !== 1) throw new Error("member not found in this tenant")
+      await prisma.member.updateMany({ where: { tenantId }, data: { active: false } })
     },
   }),
-
   /**
    * Turn an alert rule ON — the moment finding titles, severities and timestamps start leaving this
    * host for its destination.

@@ -2,20 +2,20 @@ import Fastify, { type FastifyInstance } from "fastify"
 import { z } from "zod"
 import { ALERT_RULE_INPUT, createAlertRule } from "../actions/registry.ts"
 import { UnsafeTargetError } from "../alerts/deliver.ts"
-import { ActionError, completeAction, openAction, tenantBinding } from "../actions/execute.ts"
-import { GateError, resolveGateConfig, testConnection } from "../gate/rp.ts"
-import { AuthError, beginEnrol, beginLogin, completeEnrol, completeLogin } from "../auth/ceremony.ts"
-import { issueInvite } from "../auth/invite.ts"
+import { ActionError, openAction, pollAction, tenantBinding } from "../actions/execute.ts"
+import { GateError, parseTrustAnchor, resolveGateConfig, testConnection } from "../gate/client.ts"
+import { AuthError, beginLogin, completeLogin, LOGIN_COOKIE } from "../auth/oidc.ts"
 import {
   clearCookie,
   COOKIE,
+  createSession,
   readCookie,
   resolveSession,
   revokeSession,
   type SessionActor,
   sessionCookie,
 } from "../auth/session.ts"
-import { enrolPage, loginPage } from "../ui/auth.ts"
+import { loginPage } from "../ui/auth.ts"
 import { config } from "../config.ts"
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { createLimiter } from "./ratelimit.ts"
@@ -278,11 +278,8 @@ export function buildApp(): FastifyInstance {
     "/ready",
     "/login",
     "/login/begin",
-    "/login/complete",
+    "/auth/callback",
     "/logout",
-    "/members/enrol",
-    "/members/enrol/begin",
-    "/members/enrol/complete",
   ])
   const isPublic = (url: string): boolean => {
     const path = url.split("?")[0] ?? url
@@ -294,6 +291,11 @@ export function buildApp(): FastifyInstance {
 
   app.decorateRequest("actor", null)
 
+  /** Connected to an INTYGA workspace: sign-in and approvals can work. */
+  const bound = <T extends { intygaBaseUrl: string | null; intygaOidcClientId: string | null }>(
+    t: T | null,
+  ): t is T => Boolean(t?.intygaBaseUrl && t.intygaOidcClientId)
+
   app.addHook("preHandler", async (req, reply) => {
     const r = req as typeof req & { actor: SessionActor | null }
     r.actor = await resolveSession(readCookie(req.headers.cookie, COOKIE))
@@ -304,7 +306,7 @@ export function buildApp(): FastifyInstance {
     // Everything else is closed rather than open — an unbound instance is exactly the one a stranger
     // is most likely to find first, and "no workspace, so no auth" used to let them create connectors,
     // replace the signing key and read the console. The setup form itself is gated by SETUP_TOKEN.
-    if (!t?.intygaKeyCipher) {
+    if (!bound(t)) {
       const path = req.url.split("?")[0] ?? req.url
       if (path === "/" || path === "/settings/bind") return
       if ((req.headers.accept ?? "").includes("text/html")) return reply.redirect("/", 303)
@@ -353,42 +355,85 @@ export function buildApp(): FastifyInstance {
       ...(error ? { error } : {}),
     })
 
+  /** The origin the OIDC callback lives on: the tenant's configured one, else this deployment's. */
+  const originFor = (
+    t: { publicOrigin: string | null } | null,
+    req: { headers: { host?: string | undefined }; protocol: string },
+  ) => t?.publicOrigin ?? config.publicUrl ?? `${req.protocol}://${req.headers.host ?? "localhost"}`
+
   app.get("/login", async (req, reply) => {
     if (actorOf(req)) return reply.redirect("/", 303)
-    const q = req.query as { id?: string }
-    return html(reply, loginPage(q.id ? { prefill: q.id } : {}))
+    const t = await tenant()
+    const q = req.query as { email?: string; error?: string }
+    return html(
+      reply,
+      loginPage({
+        ...(q.email ? { prefill: q.email } : {}),
+        ...(q.error === "refused" ? { error: "INTYGA did not sign you in. Try again." } : {}),
+        consoleUrl: t?.intygaConsoleUrl ?? config.intygaConsoleUrl,
+      }),
+    )
   })
 
+  // Starts a standard OpenID Connect sign-in at INTYGA (core ADR 030). The PKCE verifier and the
+  // state live in an encrypted, HttpOnly cookie until the callback; the person's address is only a
+  // hint for INTYGA's form — INTYGA decides who they are.
   app.post("/login/begin", async (req, reply) => {
     const t = await tenant()
-    if (!t) return reply.code(404).send({ error: "no workspace" })
-    const parsed = z.object({ externalId: z.string().min(1).max(200) }).safeParse(json(req))
-    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
-    try {
-      return await beginLogin(t.id, parsed.data.externalId)
-    } catch (err) {
-      req.log.warn({ err: (err as Error).message }, "login begin failed")
-      return reply
-        .code(err instanceof AuthError ? 400 : 502)
-        .send({ error: clientError(err, "could not start sign-in") })
-    }
+    if (!t?.intygaBaseUrl || !t.intygaOidcClientId) return reply.code(404).send({ error: "no workspace" })
+    const parsed = z.object({ email: z.string().trim().max(254).optional() }).safeParse(req.body ?? {})
+    const email = parsed.success ? parsed.data.email : undefined
+    const { redirectTo, cookie } = beginLogin(
+      { baseUrl: t.intygaBaseUrl, clientId: t.intygaOidcClientId, workspaceId: t.intygaWorkspaceId },
+      originFor(t, req),
+      email,
+    )
+    return reply
+      .header(
+        "set-cookie",
+        `${LOGIN_COOKIE}=${cookie}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600${
+          config.isProdLike ? "; Secure" : ""
+        }`,
+      )
+      .redirect(redirectTo, 303)
   })
 
-  app.post("/login/complete", async (req, reply) => {
+  app.get("/auth/callback", async (req, reply) => {
     const t = await tenant()
-    if (!t) return reply.code(404).send({ error: "no workspace" })
-    const parsed = z
-      .object({ nonce: z.string().min(1).max(200), assertion: z.unknown() })
-      .safeParse(json(req))
-    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
+    if (!t?.intygaBaseUrl || !t.intygaOidcClientId) return reply.code(404).send({ error: "no workspace" })
+    const q = req.query as { code?: string; state?: string; error?: string }
+    const clearLogin = `${LOGIN_COOKIE}=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0`
     try {
-      const { token, label } = await completeLogin(t.id, parsed.data.nonce, parsed.data.assertion)
-      return reply.header("set-cookie", sessionCookie(token)).send({ ok: true, label })
+      const person = await completeLogin(
+        { baseUrl: t.intygaBaseUrl, clientId: t.intygaOidcClientId, workspaceId: t.intygaWorkspaceId },
+        originFor(t, req),
+        q,
+        readCookie(req.headers.cookie, LOGIN_COOKIE),
+      )
+      // The id_token is the record of who this is and what they may do; the row only caches it.
+      const member = await prisma.member.upsert({
+        where: { tenantId_externalId: { tenantId: t.id, externalId: person.email } },
+        create: {
+          tenantId: t.id,
+          externalId: person.email,
+          label: person.name,
+          role: person.role,
+          active: true,
+          lastLoginAt: new Date(),
+        },
+        update: { label: person.name, role: person.role, active: true, lastLoginAt: new Date() },
+        select: { id: true },
+      })
+      const token = await createSession({ tenantId: t.id, memberId: member.id })
+      return reply.header("set-cookie", [clearLogin, sessionCookie(token)]).redirect("/", 303)
     } catch (err) {
-      req.log.warn({ err: (err as Error).message }, "login refused")
+      req.log.warn({ err: (err as Error).message }, "sign-in refused")
+      const message = clientError(err, "sign-in failed")
       return reply
         .code(err instanceof AuthError ? 401 : 502)
-        .send({ error: clientError(err, "sign-in failed") })
+        .header("set-cookie", clearLogin)
+        .type("text/html; charset=utf-8")
+        .send(loginPage({ error: message, consoleUrl: t.intygaConsoleUrl ?? config.intygaConsoleUrl }))
     }
   })
 
@@ -397,44 +442,6 @@ export function buildApp(): FastifyInstance {
     if (a) await revokeSession(a.sessionId)
     // Cleared regardless: a cookie for a session that no longer resolves is still confusing.
     return reply.header("set-cookie", clearCookie()).redirect("/login", 303)
-  })
-
-  // Enrolment is by INVITE, never by subject id — see src/auth/invite.ts. The page takes no
-  // parameters: the invite rides in the URL fragment, which the browser never sends here, and the
-  // page posts it in a body. Who is being enrolled is derived from the invite server-side.
-  app.get("/members/enrol", async (_req, reply) => html(reply, enrolPage()))
-
-  const INVITE_BODY = z.object({ invite: z.string().min(1).max(100) })
-
-  app.post("/members/enrol/begin", async (req, reply) => {
-    const t = await tenant()
-    if (!t) return reply.code(404).send({ error: "no workspace" })
-    const parsed = INVITE_BODY.safeParse(json(req))
-    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
-    try {
-      return await beginEnrol(t.id, parsed.data.invite)
-    } catch (err) {
-      req.log.warn({ err: (err as Error).message }, "enrol begin failed")
-      return reply
-        .code(err instanceof AuthError ? 400 : 502)
-        .send({ error: clientError(err, "could not start enrolment") })
-    }
-  })
-
-  app.post("/members/enrol/complete", async (req, reply) => {
-    const t = await tenant()
-    if (!t) return reply.code(404).send({ error: "no workspace" })
-    const parsed = INVITE_BODY.extend({ response: z.unknown() }).safeParse(json(req))
-    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
-    try {
-      await completeEnrol(t.id, parsed.data.invite, parsed.data.response)
-      return { ok: true }
-    } catch (err) {
-      req.log.warn({ err: (err as Error).message }, "enrol refused")
-      return reply
-        .code(err instanceof AuthError ? 400 : 502)
-        .send({ error: clientError(err, "enrolment failed") })
-    }
   })
 
   // ─── tenant resolution ─────────────────────────────────────────────────────────────────────────
@@ -486,7 +493,7 @@ export function buildApp(): FastifyInstance {
     const t = await tenant()
     // A tenant can exist unbound (provision-tenant.ts runs before bind-workspace.ts); it has no
     // console to show until it is connected.
-    if (!t?.intygaKeyCipher) return html(reply, onboarding())
+    if (!bound(t)) return html(reply, onboarding())
     const since = new Date(Date.now() - WINDOW_MS)
     const [stats, events, refusals, findings, c] = await Promise.all([
       overview(t.id, since),
@@ -858,9 +865,17 @@ export function buildApp(): FastifyInstance {
     if (!t) return html(reply, onboarding())
     const rows = await prisma.member.findMany({
       where: { tenantId: t.id },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ active: "desc" }, { createdAt: "asc" }],
     })
-    return html(reply, membersPage({ rows, counts: await counts(t.id), ...withActor(req) }))
+    return html(
+      reply,
+      membersPage({
+        rows,
+        consoleUrl: t.intygaConsoleUrl ?? config.intygaConsoleUrl,
+        counts: await counts(t.id),
+        ...withActor(req),
+      }),
+    )
   })
 
   app.get("/settings", async (req, reply) => {
@@ -871,10 +886,13 @@ export function buildApp(): FastifyInstance {
       settingsPage({
         binding: {
           baseUrl: t.intygaBaseUrl,
-          clientId: t.intygaClientId,
-          rpId: t.intygaRpId,
-          origin: t.intygaOrigin,
-          hasKey: Boolean(t.intygaKeyCipher),
+          consoleUrl: t.intygaConsoleUrl,
+          workspaceId: t.intygaWorkspaceId,
+          oidcClientId: t.intygaOidcClientId,
+          serviceClientId: t.intygaServiceClientId,
+          hasSecret: Boolean(t.intygaServiceSecretCipher),
+          trustAnchorAt: t.intygaTrustAnchorAt,
+          origin: t.publicOrigin ?? config.publicUrl,
         },
         retentionDays: RETENTION_DAYS,
         counts: await counts(t.id),
@@ -887,45 +905,30 @@ export function buildApp(): FastifyInstance {
     // First, so a missing token is the first thing the form reports.
     setupToken: z.string({ error: "Enter the setup token" }).min(1, "Enter the setup token").max(500),
     baseUrl: z.url(),
-    clientId: z.string().min(1).max(200),
-    rpId: z.string().min(1).max(253),
-    origin: z.url(),
-    privateKey: z.string().min(1).max(8000),
-    // Optional in the SCHEMA, required by the CHECK below when no administrator exists yet.
-    //
-    // Two paths reach this route. Signup: no tenant, so nobody could ever approve anything, and a
-    // first administrator is mandatory. Settings: the tenant already has administrators, and asking
-    // again would be noise. Requiring them unconditionally broke the second path; making them
-    // optional unconditionally would allow a tenant that can approve nothing.
-    adminExternalId: z
-      .string()
-      .min(1)
-      .max(200)
-      .regex(/^[A-Za-z0-9._:@+=-]+$/)
-      .optional(),
-    adminLabel: z.string().min(1).max(200).optional(),
+    consoleUrl: z.url(),
+    workspaceId: z.string().trim().min(1).max(200),
+    oidcClientId: z.string().trim().min(1).max(200),
+    serviceClientId: z.string().trim().min(1).max(200),
+    serviceSecret: z.string().min(1).max(4000),
+    trustAnchor: z.string().min(2).max(200_000),
+    origin: z.url().optional(),
   })
 
+  // First-time connection: the ONE route an unbound instance serves, gated by SETUP_TOKEN. There is
+  // no administrator to enrol — the first workspace ADMIN who signs in with INTYGA is one.
   app.post("/settings/bind", async (req, reply) => {
     const parsed = BIND.safeParse(req.body)
     if (!parsed.success) {
-      // Re-render the signup with the reason rather than a bare 400: this is the first thing anyone
-      // sees, and a JSON error body on a form post is a dead end.
       return html(reply.code(400), onboarding(parsed.error.issues[0]?.message ?? "Invalid details"))
     }
     const d = parsed.data
-    // Binding is the SIGNUP step: before it there is no tenant, and therefore nobody who could
-    // approve anything. It is the one privileged change that cannot be gated by a passkey, which is
-    // why it can only ever run once — afterwards the gate exists — and why it needs SETUP_TOKEN:
-    // without it, whoever reached a fresh deployment first would bind it to their own workspace.
     const existing = await tenant()
-    if (existing?.intygaKeyCipher) {
-      // Already bound, so an administrator exists who could approve this. Repointing the workspace
-      // is the one change that could hand the tenant to someone else, so it goes through the
-      // signed path on /settings, never an unauthenticated form post.
+    // Read before the guard: `bound` is a type predicate, so past the early return TS narrows
+    // `existing` to null even though an unbound row may exist (provision-tenant.ts creates one).
+    const existingId = existing?.id ?? null
+    if (bound(existing)) {
       return reply.code(409).send({ error: "already connected — repointing requires an approved action" })
     }
-
     let expected: string | null
     try {
       expected = config.setupToken
@@ -949,51 +952,28 @@ export function buildApp(): FastifyInstance {
       req.log.warn("setup attempted with a wrong setup token")
       return html(reply.code(403), onboarding("That setup token is not correct."))
     }
-
-    const existingAdmins = existing
-      ? await prisma.member.count({ where: { tenantId: existing.id, active: true } })
-      : 0
-    if (existingAdmins === 0 && !(d.adminExternalId && d.adminLabel)) {
-      return html(
-        reply.code(400),
-        onboarding(
-          "A first administrator is required — without one, nothing here could ever be approved, " +
-            "including adding an administrator.",
-        ),
-      )
-    }
-
+    const anchor = parseTrustAnchor(d.trustAnchor)
+    if (!anchor.ok) return html(reply.code(400), onboarding(anchor.error))
+    if (anchor.anchor.tenantId !== d.workspaceId)
+      return html(reply.code(400), onboarding("The trust anchor must name the connected workspace."))
     const data = {
       intygaBaseUrl: d.baseUrl,
-      intygaClientId: d.clientId,
-      intygaRpId: d.rpId,
-      intygaOrigin: d.origin,
-      intygaKeyCipher: encryptSecret(d.privateKey),
+      intygaConsoleUrl: d.consoleUrl,
+      intygaWorkspaceId: d.workspaceId,
+      intygaOidcClientId: d.oidcClientId,
+      intygaServiceClientId: d.serviceClientId,
+      intygaServiceSecretCipher: encryptSecret(d.serviceSecret),
+      intygaTrustAnchor: JSON.parse(d.trustAnchor) as object,
+      intygaTrustAnchorAt: new Date(),
+      publicOrigin: d.origin ?? config.publicUrl,
     }
-
-    // Tenant, first administrator and the built-in Intyga connector are created together: a tenant
-    // with no administrator can approve nothing, and one without its built-in connector would make
-    // "the Intyga connector is built in" false on the only path that actually creates tenants.
-    const invite = await prisma.$transaction(async (tx) => {
-      const t = existing
-        ? await tx.tenant.update({ where: { id: existing.id }, data, select: { id: true } })
+    await prisma.$transaction(async (tx) => {
+      const t = existingId
+        ? await tx.tenant.update({ where: { id: existingId }, data, select: { id: true } })
         : await tx.tenant.create({
             data: { slug: "default", name: "default", ...data },
             select: { id: true },
           })
-
-      let issued: { token: string } | null = null
-      if (d.adminExternalId && d.adminLabel) {
-        const member = await tx.member.upsert({
-          where: { tenantId_externalId: { tenantId: t.id, externalId: d.adminExternalId } },
-          create: { tenantId: t.id, externalId: d.adminExternalId, label: d.adminLabel },
-          update: { label: d.adminLabel, active: true },
-          select: { id: true },
-        })
-        // The person completing setup is the first administrator, so they get the first invite.
-        issued = await issueInvite(tx, { tenantId: t.id, memberId: member.id })
-      }
-
       const hasBuiltIn = await tx.connection.findFirst({
         where: { tenantId: t.id, kind: "intyga", builtIn: true },
         select: { id: true },
@@ -1010,24 +990,15 @@ export function buildApp(): FastifyInstance {
           },
         })
       }
-      return issued
     })
-
-    // Straight to enrolment, with the invite in the fragment: it never reaches a log or a Referer.
-    // Administrators provisioned from the CLI already hold their own invite links.
-    if (invite) return reply.redirect(`/members/enrol#invite=${invite.token}`, 303)
     return reply.redirect("/login", 303)
   })
 
-  /**
-   * Exercise the stored workspace binding.
-   *
-   * POST rather than GET: it makes an outbound request and invalidates a cached token, so it is not
-   * safe to prefetch or retry blindly.
-   */
   app.post("/settings/test", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ ok: false, error: "no tenant" })
+    if (actorOf(req)?.role !== "ADMIN")
+      return reply.code(403).send({ ok: false, error: "administrator only" })
     try {
       const cfg = resolveGateConfig(await tenantBinding(t.id))
       return await testConnection(cfg)
@@ -1038,43 +1009,63 @@ export function buildApp(): FastifyInstance {
   })
 
   /**
-   * Replace the signing key without changing which workspace this tenant belongs to.
+   * Replace the service secret and/or the trust anchor without changing which workspace this tenant
+   * belongs to.
    *
-   * Deliberately NOT a signed action. Signing it would require the key being replaced to still
-   * work, so a compromised or expired key could never be rotated — the failure mode the rotation
-   * exists for. It changes no identity and grants no access: a key the workspace does not trust
-   * simply fails at the next token exchange, which `/settings/test` will show immediately.
+   * Deliberately NOT an approved action. Approving it would require the binding being replaced to
+   * still work, so a rotated secret or a stale anchor could never be fixed — the failure mode this
+   * exists for. It changes no identity and grants no access: a secret the workspace does not know
+   * simply fails at the next token exchange, which `/settings/test` shows immediately. An admin can
+   * paste arbitrary approver keys; a bad anchor makes actions fail. It cannot bypass approval:
+   * INTYGA still checks the approval when Intelligence redeems it, before the action executes.
+   * Administrators only, under a live session.
    */
-  app.post("/settings/key", async (req, reply) => {
+  app.post("/settings/credentials", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ error: "no tenant" })
-    const parsed = z.object({ privateKey: z.string().min(1).max(8000) }).safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: "invalid key" })
-    await prisma.tenant.update({
-      where: { id: t.id },
-      data: { intygaKeyCipher: encryptSecret(parsed.data.privateKey) },
-    })
+    if (actorOf(req)?.role !== "ADMIN") return reply.code(403).send({ error: "administrator only" })
+    const parsed = z
+      .object({
+        serviceSecret: z.string().max(4000).optional(),
+        trustAnchor: z.string().max(200_000).optional(),
+      })
+      .safeParse(req.body)
+    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
+    const data: {
+      intygaServiceSecretCipher?: string
+      intygaTrustAnchor?: object
+      intygaTrustAnchorAt?: Date
+    } = {}
+    if (parsed.data.serviceSecret?.trim())
+      data.intygaServiceSecretCipher = encryptSecret(parsed.data.serviceSecret.trim())
+    if (parsed.data.trustAnchor?.trim()) {
+      const anchor = parseTrustAnchor(parsed.data.trustAnchor)
+      if (!anchor.ok) return reply.code(400).send({ error: anchor.error })
+      if (anchor.anchor.tenantId !== t.intygaWorkspaceId)
+        return reply.code(400).send({ error: "The trust anchor must name the connected workspace." })
+      data.intygaTrustAnchor = JSON.parse(parsed.data.trustAnchor) as object
+      data.intygaTrustAnchorAt = new Date()
+    }
+    if (Object.keys(data).length === 0) return reply.code(400).send({ error: "nothing to update" })
+    await prisma.tenant.update({ where: { id: t.id }, data })
     return reply.redirect("/settings", 303)
   })
 
   // ─── privileged actions ────────────────────────────────────────────────────────────────────────
-
   const OPEN = z.object({ action: z.string().min(1).max(120), params: z.record(z.string(), z.unknown()) })
-  const COMPLETE = z.object({ nonce: z.string().min(1).max(200), assertion: z.unknown() })
-
   app.post("/api/actions/open", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ error: "no tenant" })
     const parsed = OPEN.safeParse(json(req))
     if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
     try {
-      // The actor is whoever is signed in — never "the first administrator". Approving as someone
-      // else would make the signature prove nothing about who authorised the change.
+      // The actor is whoever is signed in — never "the first administrator". Opening as someone
+      // else would make the record prove nothing about who asked for the change.
       const actor = actorOf(req)
       if (!actor) return reply.code(401).send({ error: "not signed in" })
       return await openAction({
         tenantId: t.id,
-        actorExternalId: actor.externalId,
+        actor: { externalId: actor.externalId, role: actor.role },
         action: parsed.data.action,
         params: parsed.data.params,
       })
@@ -1086,22 +1077,22 @@ export function buildApp(): FastifyInstance {
     }
   })
 
-  app.post("/api/actions/complete", async (req, reply) => {
+  // Polled by the page that opened the action. Verification, consumption and execution happen here,
+  // server-side, from the FROZEN parameters — the browser only learns the outcome.
+  app.get("/api/actions/:nonce", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ error: "no tenant" })
-    const parsed = COMPLETE.safeParse(json(req))
-    if (!parsed.success) return reply.code(400).send({ error: "invalid request" })
+    const actor = actorOf(req)
+    if (!actor) return reply.code(401).send({ error: "not signed in" })
+    const nonce = (req.params as { nonce?: string }).nonce ?? ""
+    if (!/^[A-Za-z0-9_-]{8,200}$/.test(nonce)) return reply.code(400).send({ error: "invalid request" })
     try {
-      return await completeAction({
-        tenantId: t.id,
-        nonce: parsed.data.nonce,
-        assertion: parsed.data.assertion,
-      })
+      return await pollAction({ tenantId: t.id, nonce })
     } catch (err) {
-      req.log.warn({ err: (err as Error).message }, "action complete failed")
+      req.log.warn({ err: (err as Error).message }, "action poll failed")
       return reply
         .code(err instanceof ActionError ? 400 : 502)
-        .send({ error: clientError(err, "the approval could not be completed") })
+        .send({ error: clientError(err, "the approval could not be read") })
     }
   })
 
