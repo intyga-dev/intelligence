@@ -1,3 +1,4 @@
+import { connectorGroups, judgmentGuidance, QUESTION_SET } from "./guidance.ts"
 import crypto from "node:crypto"
 import type { Evidence } from "../domain/finding.ts"
 import type { FindingListItem } from "../store/repo.ts"
@@ -23,7 +24,19 @@ export interface JudgmentState {
     title: string
     occurrences: number
   }
-  measurements: { label: string; value: number; baseline?: number }[]
+  context?: {
+    questionSet: string
+    connectorGroups: string[]
+    basis: "provider-alert" | "detector-evidence"
+    status: string
+  }
+  measurements: {
+    label: string
+    value: number
+    baseline?: number
+    windowSeconds?: number
+    comparison?: "unspecified"
+  }[]
   /** Counts only. Never the ids themselves. */
   events: { kind: string; count: number }[]
   subjectDigest: string | null
@@ -48,6 +61,7 @@ export function redactTitle(title: string): string {
 }
 
 export function projectForJudgment(f: FindingListItem, salt: string): JudgmentState {
+  if (f.kind === "observation") throw new Error("Review observations are not anomaly evidence")
   const measurements: JudgmentState["measurements"] = []
   const eventCounts = new Map<string, number>()
   let subject: string | null = null
@@ -59,7 +73,15 @@ export function projectForJudgment(f: FindingListItem, salt: string): JudgmentSt
         // anything at all. Redacted on the same rules as the title.
         label: redactTitle(e.label),
         value: e.value,
-        ...(e.baseline !== undefined ? { baseline: e.baseline } : {}),
+        ...(e.baseline !== undefined ? { baseline: e.baseline, comparison: "unspecified" as const } : {}),
+        ...(Number.isFinite(new Date(e.window.to).getTime() - new Date(e.window.from).getTime())
+          ? {
+              windowSeconds: Math.max(
+                0,
+                (new Date(e.window.to).getTime() - new Date(e.window.from).getTime()) / 1000,
+              ),
+            }
+          : {}),
       })
     } else if (e.kind === "eventRef") {
       eventCounts.set(e.eventKind, (eventCounts.get(e.eventKind) ?? 0) + 1)
@@ -72,11 +94,19 @@ export function projectForJudgment(f: FindingListItem, salt: string): JudgmentSt
   const m = /did:[A-Za-z0-9._:-]+/.exec(f.title)
   if (m) subject = digest(salt, m[0])
 
+  const kinds = [...eventCounts.keys()]
+  const providerAlert = kinds.some((kind) => kind.endsWith(".provider.alert"))
   return {
+    context: {
+      questionSet: QUESTION_SET,
+      connectorGroups: connectorGroups(kinds),
+      basis: providerAlert ? "provider-alert" : "detector-evidence",
+      status: f.status,
+    },
     finding: {
       category: f.category,
       severity: f.severity,
-      title: redactTitle(f.title),
+      title: providerAlert ? "Provider-reported alert condition" : redactTitle(f.title),
       occurrences: f.count,
     },
     measurements,
@@ -87,6 +117,7 @@ export function projectForJudgment(f: FindingListItem, salt: string): JudgmentSt
 
 /** The exact request body that would be sent — rendered without sending it. */
 export function previewRequest(state: JudgmentState, model: string): string {
+  const guidance = judgmentGuidance(state.events.map((event) => event.kind))
   return JSON.stringify(
     {
       model,
@@ -94,19 +125,23 @@ export function previewRequest(state: JudgmentState, model: string): string {
       questions: {
         anomalous: {
           type: "noul",
-          instructions: "Is this pattern anomalous rather than ordinary variation?",
+          instructions: `${guidance}
+How likely is the observed pattern to be anomalous relative to expected operation? Do not equate an alert firing or detector severity with established anomalousness.`,
         },
         likely_expected_behavior: {
           type: "noul",
-          instructions: "Is this most likely expected behaviour for a system of this kind?",
+          instructions: `${guidance}
+How likely is this expected behavior? Consider routine activity and functioning safety controls without assuming missing maintenance or change approvals.`,
         },
         requires_human_attention: {
           type: "noul",
-          instructions: "Should a human investigate this now?",
+          instructions: `${guidance}
+Does the supplied evidence justify human investigation now? Account for the finding status: resolved or dismissed is not an active incident unless new evidence explicitly contradicts it. This is a prioritization assessment, never authorization to change a system.`,
         },
         severity: {
           type: "score",
-          instructions: "How serious is this?",
+          instructions: `${guidance}
+Rate supported impact: informational = context only; low = limited concern; medium = investigation warranted with unclear or limited impact; high = evidence of significant disruption or policy failure; critical = evidence of severe ongoing harm requiring immediate response. Do not infer critical impact from a provider label alone. Severity confidence describes this severity assessment, not the anomaly answer.`,
           criteria: ["informational", "low", "medium", "high", "critical"],
         },
       },

@@ -181,6 +181,7 @@ export async function deliverAlerts(now: Date = new Date(), send: Send = fetch):
     const found = await prisma.finding.findMany({
       where: {
         tenantId: rule.tenantId,
+        NOT: { dedupeKey: { startsWith: "sensitive:" } },
         status: { in: ["new", "investigating"] },
         severity: { in: severitiesAtLeast(rule.minSeverity) },
         ...(rule.categories.length > 0 ? { category: { in: rule.categories } } : {}),

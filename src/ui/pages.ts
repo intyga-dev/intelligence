@@ -1,3 +1,4 @@
+import { stylesheetLinks } from "./styles.ts"
 import type { Overview } from "../store/analytics.ts"
 import type { FindingListItem } from "../store/repo.ts"
 import { findingUrl } from "../domain/findingQuery.ts"
@@ -5,6 +6,7 @@ import { connectorHealth, type ConnectorHealthInput } from "../domain/connectorH
 export { findingsPage } from "./findingsPage.ts"
 import { areaChart, hBars, histogram, type Point } from "./charts.ts"
 import { ago, authPage, esc, num, page } from "./layout.ts"
+import { operationalSettingsForms, type DetectorSettingsView } from "./operationalSettings.ts"
 
 // Page renderers. Server-rendered strings — no client framework, no hydration, no build step.
 //
@@ -181,24 +183,20 @@ export interface ConnectorRow extends ConnectorHealthInput {
  */
 export function connectorCreatedPage(o: {
   connection: string
-  def: { kind: string; label: string; setup: string[] }
+  def: { kind: string; label: string; setup: string[]; mode?: "push" | "poll" }
   secret: string | null
   base: string
 }): string {
   return page({
-    title: `${o.def.label} connected`,
+    title: `${o.def.label} saved`,
     lede: "Created and switched off. It ingests nothing until you turn it on.",
     path: "/connectors",
-    body: `
-<style>.setup{counter-reset:s;list-style:none;padding:0;margin:9px 0 0;display:grid;gap:6px}
-.setup li{counter-increment:s;position:relative;padding-left:26px;font-size:12.5px;color:var(--muted)}
-.setup li::before{content:counter(s);position:absolute;left:0;top:0;width:18px;height:18px;border-radius:999px;
-  background:var(--panel-2);border:1px solid var(--border);color:var(--text);font-size:10px;
-  display:flex;align-items:center;justify-content:center;font-weight:600}</style>
+    body: `<span hidden data-flash-message="Connector saved. Follow the setup steps, then activate it."></span>
+${stylesheetLinks("connectors")}
 ${
   o.secret
     ? `<div class="card" style="border-color:var(--amber)">
-  <h2>Signing secret — shown once</h2>
+  <h2>Connector secret — shown once</h2>
   <p class="mut" style="font-size:13px;margin-top:0">
     Copy this now. It is stored encrypted and cannot be displayed again; a lost secret means
     creating a new connector.</p>
@@ -208,9 +206,9 @@ ${
     : ""
 }
 <div class="card">
-  <h2>Endpoint</h2>
+  <h2>${o.def.mode === "poll" ? "Polling setup" : "Endpoint"}</h2>
   <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px">
-    <code>${esc(`${o.base}/ingest/${o.def.kind}/${o.connection}`)}</code></div>
+    ${o.def.mode === "poll" ? "After activation, the scheduler collects data using the credentials you configured. No inbound webhook endpoint is needed." : `<code>${esc(`${o.base}/ingest/${o.def.kind}/${o.connection}`)}</code>`}</div>
 </div>
 <div class="card">
   <h2>Next</h2>
@@ -224,6 +222,9 @@ ${
 }
 
 export interface AvailableConnector {
+  category?: string
+  coverage?: string
+  docsUrl?: string
   kind: string
   label: string
   blurb: string
@@ -257,25 +258,12 @@ export function connectorsPage(o: {
 
   return page({
     title: "Connectors",
-    lede:
-      "Where observations come from. The INTYGA connector is built in — you already have the " +
-      "relationship, this only decides whether Intelligence also watches it.",
+    lede: "Connect the tools you already use. Choose a source, follow its setup instructions, and see exactly which findings it can produce.",
     path: "/connectors",
     counts: o.counts,
     ...(o.actor ? { actor: o.actor } : {}),
     body: `
-<style>
-.setup{counter-reset:s;list-style:none;padding:0;margin:9px 0 0;display:grid;gap:6px}
-.setup li{counter-increment:s;position:relative;padding-left:26px;font-size:12.5px;color:var(--muted)}
-.setup li::before{content:counter(s);position:absolute;left:0;top:0;width:18px;height:18px;border-radius:999px;
-  background:var(--panel-2);border:1px solid var(--border);color:var(--text);font-size:10px;
-  display:flex;align-items:center;justify-content:center;font-weight:600}
-.secret{background:var(--panel-2);border:1px solid var(--amber);border-radius:8px;padding:11px 13px;margin:10px 0 0}
-.cat{display:grid;gap:10px}
-.cat .c{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--border);border-radius:10px;padding:13px 15px;background:var(--panel-2)}
-.cat .c h3{margin:0 0 3px;font-size:13.5px;font-weight:650}
-.cat .c p{margin:0;font-size:12.5px;color:var(--muted)}
-</style>
+${stylesheetLinks("connectors")}
 
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:14px">
   <div class="stat"><div class="v">${num(o.rows.filter((c) => c.active).length)}</div><div class="l">Active sources</div></div>
@@ -295,7 +283,7 @@ ${o.rows
     return `
 <div class="card">
   <div class="row" style="margin-bottom:9px">
-    <h2>${esc(c.label)}</h2>
+    <h2>${c.kind === "github" ? `<a href="/connectors/${esc(c.id)}/edit">${esc(c.label)}</a>` : esc(c.label)}</h2>
     <span class="badge ${c.active ? "on" : "off"}">${c.active ? "active" : "inactive"}</span>
     ${c.builtIn ? `<span class="badge">built in</span>` : ""}
     <span class="badge">${c.mode}</span>
@@ -315,6 +303,7 @@ ${o.rows
           })
     }</span>
   </div>
+  ${c.kind === "github" ? `<p><a class="btn" href="/connectors/${esc(c.id)}/edit">Edit configuration</a></p>` : ""}
   <div style="margin-bottom:12px"><span class="badge ${health.tone}">${esc(health.label)}</span>
     <p class="mut" style="margin:6px 0 0;font-size:12.5px">${esc(health.detail)}</p></div>
   <table><tbody>
@@ -356,13 +345,22 @@ ${o.rows
   ${
     addable.length === 0
       ? `<div class="empty" style="margin-top:11px">Everything available is already connected.</div>`
-      : `<div class="cat">${addable
+      : `<div class="row" style="margin:12px 0"><label>Find your tool <input id="connector-search" type="search" placeholder="AWS, Google, Kubernetes, backups…"></label><label>Category <select id="connector-category"><option value="">All categories</option>${[
+          ...new Set(addable.map((a) => a.category ?? "Other")),
+        ]
+          .sort()
+          .map((c) => `<option>${esc(c)}</option>`)
+          .join(
+            "",
+          )}</select></label></div><p id="connector-no-match" class="mut" hidden>No matching connector. Try another name or use Custom webhook for a signed event feed.</p><div class="cat">${addable
           .map(
             (a) => `
-      <div class="c">
+      <div class="c" data-catalogue-category="${esc(a.category ?? "Other")}" data-catalogue-search="${esc(`${a.label} ${a.blurb} ${a.coverage ?? ""}`.toLowerCase())}">
         <div style="flex:1">
           <h3>${esc(a.label)} <span class="badge">${a.mode}</span></h3>
           <p>${esc(a.blurb)}</p>
+          ${a.coverage ? `<p style="margin-top:6px"><b>Coverage:</b> ${esc(a.coverage)}</p>` : ""}
+          ${a.docsUrl ? `<p style="margin-top:6px"><a href="${esc(a.docsUrl)}" target="_blank" rel="noopener noreferrer">Provider setup reference</a></p>` : ""}
         </div>
         <button class="btn" onclick="document.getElementById('add-${esc(a.kind)}').showModal()">${a.installed ? "Add another" : "Add"}</button>
       </div>
@@ -391,8 +389,8 @@ ${o.rows
               .join("")}
             ${
               a.generatesSecret
-                ? `<p class="mut" style="font-size:12.5px;margin:4px 0 10px">Nothing else to fill in: Intelligence
-                generates this connector's signing secret and shows it once, with the endpoint URL, on the
+                ? `<p class="mut" style="font-size:12.5px;margin:4px 0 10px">Intelligence
+                generates this connector's authentication secret and shows it once, with the endpoint URL, on the
                 next page.</p>`
                 : ""
             }
@@ -409,13 +407,14 @@ ${o.rows
           )
           .join("")}</div>`
   }
-</div>`,
+</div><script>(()=>{const search=document.getElementById('connector-search'),category=document.getElementById('connector-category');if(!search||!category)return;function filter(){let visible=0;document.querySelectorAll('[data-catalogue-search]').forEach(card=>{const show=card.dataset.catalogueSearch.includes(search.value.toLowerCase().trim())&&(!category.value||card.dataset.catalogueCategory===category.value);card.style.display=show?'':'none';if(show)visible++});document.getElementById('connector-no-match').hidden=visible>0}search.addEventListener('input',filter);category.addEventListener('change',filter)})();</script>`,
   })
 }
 
 // ─── Detectors, Alerts, Judgment, Members, Settings ──────────────────────────────────────────────
 
 export function detectorsPage(o: {
+  configuration?: DetectorSettingsView
   rows: { detector: string; enabled: boolean; description: string; settings: string; needs: string }[]
   counts: { findings: number; alerts: number; connectors: number }
   /** Who is signed in — rendered in the sidebar with the sign-out link. */
@@ -450,7 +449,7 @@ export function detectorsPage(o: {
       .join("")}</tbody></table>
   <p class="mut" style="font-size:12px;margin:12px 0 0">
     A detector with none of the sources it needs connected simply finds nothing. The code-change
-    detector's path map is set per GitHub connector (<code>generic</code> or <code>intyga-core</code>).</p></div>`,
+    detector's path map is set per GitHub connector (<code>generic</code> or <code>intyga-core</code>).</p></div>${o.configuration ? operationalSettingsForms(o.configuration) : ""}`,
   })
 }
 
@@ -555,7 +554,7 @@ export function alertCreatedPage(o: {
     path: "/alerts",
     counts: o.counts,
     ...(o.actor ? { actor: o.actor } : {}),
-    body: `
+    body: `<span hidden data-flash-message="Alert rule saved. Activate it when you are ready."></span>
 ${
   o.channel === "webhook"
     ? `<div class="card" style="border-color:var(--amber)">
@@ -579,6 +578,7 @@ ${
 }
 
 export interface JudgmentAuditRow {
+  observation?: boolean
   id: string
   createdAt: Date
   findingId?: string
@@ -651,6 +651,11 @@ export function judgmentPage(o: {
 </div>
 
 <div class="card">
+  <h2>Evidence-specific guidance</h2>
+  <p>Jev uses guidance for code and delivery, identity and access, cloud operations, monitoring and reliability, payments, and other sources. Mixed findings use every relevant group. Routine merges are expected activity; provider alerts are not independent proof of an anomaly.</p>
+  <p class="mut">The request preview below shows the exact guidance and evidence sent. Unknown impact stays uncertain, and model assessments never authorize changes.</p>
+</div>
+<div class="card">
   <h2>Audit log — Outbound requests</h2>
   <p class="mut" style="font-size:13px;margin-top:0">
     Every call dispatched to TypeSafe AI (JEV), with cryptographic state digest, model version, and outcome.
@@ -679,15 +684,17 @@ export function judgmentPage(o: {
                <td><span class="badge ${r.status === "DONE" ? "on" : r.status === "FAILED" ? "off" : ""}">${esc(r.status)}</span></td>
                <td><code>${esc(r.model)}</code></td>
                <td>${
-                 r.anomalous !== undefined
-                   ? `<b>anomalous ${(r.anomalous * 100).toFixed(0)}%</b>${
-                       r.confidence !== undefined
-                         ? ` <span class="mut">· ${(r.confidence * 100).toFixed(0)}% conf</span>`
-                         : ""
-                     }`
-                   : r.lastError
-                     ? `<span style="color:var(--red)">${esc(r.lastError)}</span>`
-                     : "—"
+                 r.observation
+                   ? '<span class="mut">Historical observation assessment; insufficient evidence for an anomaly score.</span>'
+                   : r.anomalous !== undefined
+                     ? `<b>anomalous ${(r.anomalous * 100).toFixed(0)}%</b>${
+                         r.confidence !== undefined
+                           ? ` <span class="mut">· severity confidence ${(r.confidence * 100).toFixed(0)}%</span>`
+                           : ""
+                       }`
+                     : r.lastError
+                       ? `<span style="color:var(--red)">${esc(r.lastError)}</span>`
+                       : "—"
                }</td>
                <td class="mut">${
                  r.tokens ? `${num(r.tokens.input_tokens)} / ${num(r.tokens.output_tokens)}` : "—"
@@ -763,7 +770,7 @@ export function membersPage(o: {
     ...(o.actor ? { actor: o.actor } : {}),
     body: `
 <div class="card"><table>
-<thead><tr><th>Member</th><th>INTYGA email</th><th>Role</th><th>Last sign-in</th></tr></thead>
+<thead><tr><th>Member</th><th>Account</th><th>Role</th><th>Last sign-in</th></tr></thead>
 <tbody>${o.rows
       .map(
         (m) => `<tr><td><b>${esc(m.label)}</b></td><td><code>${esc(m.externalId)}</code></td>
@@ -834,12 +841,17 @@ export function settingsPage(o: {
   <script>
   document.getElementById("test-binding").addEventListener("click", async () => {
     const out = document.getElementById("test-result");
+    const button = document.getElementById("test-binding");
+    button.disabled = true;
     out.textContent = "Testing…";
+    window.intelligenceToast("Testing connection…", "pending", {id:"connection"});
     try {
       const r = await fetch("/settings/test", { method: "POST", headers: { accept: "application/json" } });
       const b = await r.json();
-      out.textContent = b.ok ? "Connected: the service key is accepted." : (b.error || "failed");
-    } catch { out.textContent = "Connection test failed. Try again."; }
+      out.textContent = r.ok && b.ok ? "Connected: the service key is accepted." : (b.error || "failed");
+      window.intelligenceToast(out.textContent, r.ok && b.ok ? "success" : "error", {id:"connection"});
+    } catch { out.textContent = "Connection test failed. Try again."; window.intelligenceToast(out.textContent,"error",{id:"connection"}); }
+    finally { button.disabled = false; }
   });
   </script>
 </div>

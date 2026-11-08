@@ -48,6 +48,9 @@ export async function beginApprovalLogin(cfg: DeploymentConfig) {
   }
   return {
     ...opened,
+    approveUrl: cfg.embeddedApplicationId
+      ? embeddedApprovalLink(cfg, opened.nonce, state.expiresAt)
+      : opened.approveUrl,
     ...(cfg.embeddedApplicationId
       ? { embeddedApprovalUrl: embeddedApprovalLink(cfg, opened.nonce, state.expiresAt) }
       : {}),

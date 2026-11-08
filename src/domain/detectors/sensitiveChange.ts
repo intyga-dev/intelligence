@@ -9,8 +9,8 @@ import { classifyChangedPaths, type PathMap } from "../sensitivity.ts"
 // job, and the point is that a reviewer who owns that area sees it. The optional judgment layer may
 // later calibrate severity; it can never be why this fires.
 //
-// Two finding kinds per pull request:
-//   · `sensitive:` — the diff touches one or more components. Severity is the highest floor hit.
+// Two signal kinds per pull request:
+//   · `sensitive:` — informational review context when the diff touches a component.
 //   · `mirror:`    — the map declares paths that must change together, and this diff changed some
 //                    but not all of them. Only for maps that declare a mirror (intyga-core today),
 //                    and never from a truncated file list: that rule reasons from ABSENCE.
@@ -125,12 +125,12 @@ export function detectSensitiveChanges(input: SensitiveChangeInput): Finding[] {
           id: input.idFor?.(dedupeKey) ?? dedupeKey,
           tenantId: input.tenantId,
           serviceId: e.serviceId ?? null,
-          category: "security",
-          severity: res.severityFloor,
-          title: `${a.merged ? "Merged" : "Open"} ${noun} ${pr} changes ${res.hits.map((h) => h.component.id).join(", ")}`,
+          category: "engineering",
+          severity: "info",
+          title: `Review observation: ${a.merged ? "merged" : e.attrs.state === "closed" ? "closed" : "open"} ${noun} ${pr} touches ${res.hits.map((h) => h.component.id).join(", ")}`,
           summary:
-            `"${a.title}" touches ${hitPaths.length} security-sensitive file(s). ` +
-            res.hits.map((h) => `${h.component.id}: ${h.component.rationale}`).join(" ") +
+            `"${a.title}" touches ${hitPaths.length} file(s) matching the sensitive-path map. ` +
+            "This is review context; a path match does not establish unusual behavior, a vulnerability, or an unsafe merge." +
             (a.truncated ? " The file list was truncated, so more may be affected." : ""),
           evidence,
           detectedAt: input.now,

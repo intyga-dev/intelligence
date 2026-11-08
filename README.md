@@ -18,7 +18,7 @@ evidence-backed findings** that genuinely need human attention.
 key and an exported trust-anchor file in the deployment environment. Start with the
 [self-hosting walkthrough](docs/SELF_HOST.md).
 
-Intelligence is a member-bound embedded approval example. Link your real INTYGA workspace membership
+Intelligence is a self-hosted application with member-bound embedded approvals. Link your real INTYGA workspace membership
 once, then create an application passkey. Sign-in and protected changes use that passkey inside
 Intelligence. ADMINs administer; MEMBERs read. Quorum, eligibility and one-use redemption remain
 INTYGA’s responsibility. Intelligence verifies every receipt against a mounted application trust
@@ -28,10 +28,10 @@ Before configuration, explore the static example incident at `/demo`.
 Group deployment, error and incident sources into **Services** to investigate their findings and
 recent observations together. Deploy regressions use only signals from the same service.
 
-**Status: `0.1.0`, early.** Four deterministic detectors ship today (see
-[Detectors](#deterministic-detectors)); the connectors are working integrations but should be read
-as reference implementations rather than a supported product surface. There is no support SLA.
-Issues and pull requests are welcome and will be read; nothing here is promised on a timeline.
+**Version: `1.0.0`.** Ten deterministic detectors and 21 connectors are included.
+See the [release notes](CHANGELOG.md), [detector coverage](#deterministic-detectors), and
+[connector setup and limits](docs/CONNECTORS.md). Validate each connector against your provider
+account before relying on it. There is no support SLA.
 
 ---
 
@@ -67,7 +67,7 @@ flowchart LR
     end
 
     subgraph Governance [Governance]
-        Findings --> Approval[WebAuthn Passkey Signing]
+        Changes[Protected configuration changes] --> Approval[WebAuthn Passkey Signing]
     end
 
     Sources --> Ingest
@@ -88,8 +88,9 @@ flowchart LR
 
   Model judgment is optional, off by default, and can only calibrate severity or filter expected
   behaviour. It can never be the reason a finding exists.
-- **Sign in with INTYGA.** OpenID Connect with PKCE verifies the person, workspace and role.
-  Passkeys stay at INTYGA; sessions here are opaque, server-side and revocable, with HttpOnly cookies.
+- **Sign in with an application passkey.** Active INTYGA workspace membership supplies the person
+  and role. Application passkeys sign inside Intelligence; private keys stay in the authenticator.
+  Optional OIDC uses PKCE. Sessions are opaque, server-side and revocable, with HttpOnly cookies.
 - **Every privileged action needs approval.** Intelligence sends the action description, target and
   parameters to INTYGA. It verifies the receipt against the frozen request and the locally pinned
   approver keys, then redeems the approval before executing. This is an ordinary workspace approval,
@@ -135,13 +136,19 @@ cannot sign in to the INTYGA console. Revoking an application, its passkey, or m
 embedded approvals, including approvals awaiting redemption. Shared approval links let other
 eligible members contribute to quorum using their own application passkeys.
 
+Embedded requests use INTYGA's application-specific authorization endpoint. Approve inside
+Intelligence, or share its application approval link with another eligible member. INTYGA does not
+send console approval notifications for these requests; quorum, audit records and receipt checks
+still apply. The gateway must support application approval routing; Intelligence refuses to fall
+back to a console ceremony when that endpoint is unavailable.
+
 Without embedded configuration, normal approval sign-in opens INTYGA and explicitly grants its
 initiating browser ADMIN access for 12 hours. Optional OIDC uses a registered `/auth/callback` URI
 and `INTYGA_OIDC_CLIENT_ID`; its verified identity claims determine the role. Use the console-origin
 anchor for that mode. Existing sessions expire within 12 hours unless revoked locally; upstream role
 changes refresh at sign-in. Changing deployment identity invalidates old sessions and pending actions.
 
-An administrator can paste arbitrary public keys into a trust anchor. A bad anchor can make actions
+A deployment operator can put arbitrary public keys into a trust anchor. A bad anchor can make actions
 fail, but it cannot bypass approval: INTYGA independently checks eligibility and one-use redemption.
 
 ---
@@ -162,10 +169,26 @@ Detectors never observe raw vendor APIs.
 | **Fly.io**           | `poll` (API)                              | Machine state changes, restarts and OOM kills.                                                              |
 | **GitLab**           | `poll` (API, gitlab.com or self-managed)  | Merge requests with changed paths, and deployments per environment.                                         |
 | **PagerDuty**        | `push` (webhook v3, signed)               | Incidents triggered, acknowledged and resolved.                                                             |
-| **Opsgenie**         | `push` (webhook, shared-secret header)    | Alerts created and closed. Opsgenie itself shuts down on 5 April 2027.                                      |
+| **Opsgenie**         | `push` (webhook, shared-secret header)    | Alerts created and closed. For existing Opsgenie deployments; confirm provider availability.                |
 | **Datadog**          | `push` (webhook, shared-secret header)    | Monitor alerts triggering and recovering.                                                                   |
 | **Cloudflare Pages** | `poll` (API)                              | Finished Pages deployments mapped to commit SHAs.                                                           |
 | **Netlify**          | `push` (deploy notifications, signed JWS) | Deploys that went live or failed, mapped to commit SHAs.                                                    |
+
+The following native alert integrations complete the 21-connector catalogue:
+
+| Connector                     | Ingest mode | Implemented signals                                                                  |
+| ----------------------------- | ----------- | ------------------------------------------------------------------------------------ |
+| AWS EventBridge               | Push        | CloudWatch alarms, Backup jobs, Health issues and GuardDuty findings.                |
+| Google Cloud Monitoring       | Push        | Open and closed Monitoring incidents.                                                |
+| Google Workspace Alert Center | Poll        | Alert metadata and provider status; no Gmail or Drive content.                       |
+| Azure Monitor                 | Poll        | Alerts Management alerts for a configured public-Azure subscription.                 |
+| Grafana Alerting              | Push        | Individual firing and resolved alerts in grouped deliveries.                         |
+| Prometheus Alertmanager       | Push        | Individual firing and resolved alerts; does not scrape metrics.                      |
+| Stripe                        | Push        | Failed/paid payouts and created/closed disputes; excludes ordinary payment declines. |
+| Better Stack                  | Poll        | Monitor and heartbeat incidents with explicit recovery.                              |
+
+These feed `provider-alerts`; provider reports do not independently establish a root cause.
+See [authentication and first-event checks](docs/CONNECTORS.md#native-provider-integrations).
 
 **Your own sources:** send signed JSON to the custom webhook with no code, or write a connector in one
 file. [docs/CONNECTORS.md](docs/CONNECTORS.md) covers both, with signing examples for bash, Node and
@@ -175,14 +198,16 @@ Python, a GitHub Actions snippet, and the rules a connector has to follow.
 
 ## Deterministic detectors
 
-Four detectors ship. Each is a pure function over stored events, runs on every detection tick, and
+Ten detectors ship. Each is a pure function over stored events, runs on every detection tick, and
 can be switched off on `/detectors`. Switching one off is a passkey-signed action. The severity and
 the reason a finding exists are always computed; the optional model can only adjust them afterwards.
 
 - **`denial-burst`** — a subject refused far more than it usually is, judged against its own
   history, plus any action type it has never attempted before. _Needs:_ the INTYGA connector.
   ([source](src/domain/detectors/denialBurst.ts))
-- **`sensitive-code-change`** — a pull request touching security-sensitive code. Each GitHub
+- **`sensitive-code-change`** — informational review observations for pull requests touching sensitive paths.
+  They appear under **Findings → Observations**, do not trigger alerts, and are not sent for model anomaly scoring.
+  A merge or path match alone does not establish unusual behavior. Each GitHub
   connector picks a **path map**:
   - `generic` (the default) matches conventional names in any repository: auth, sessions,
     permissions, crypto, secrets, migrations, infrastructure, CI. It is a heuristic and says so.
@@ -190,7 +215,7 @@ the reason a finding exists are always computed; the optional model can only adj
     must change together across six language ports is flagged when a PR updates only some of them.
     That rule is never applied to a truncated file list.
 
-  Drafts and noise (lockfiles, docs, tests) are skipped. Each PR has one finding, updated on each
+  Drafts and noise (lockfiles, docs, blog articles, styles, tests) are skipped. Each PR has one observation, updated on each
   push. Works the same on GitLab merge requests. _Needs:_ the GitHub or GitLab connector. ([source](src/domain/detectors/sensitiveChange.ts))
 - **`deploy-regression`** — errors (Sentry), machine crashes (Fly), incidents (PagerDuty,
   Opsgenie, Datadog; one is enough) or the approval refusal rate (INTYGA) rising in the 30 minutes
@@ -221,6 +246,49 @@ Noise guards are part of each detector, not tuning left to you:
 Enter custom PromQL expressions one per line. Comma-separated bare metric names remain supported;
 commas inside selectors or functions are preserved.
 
+The operational detectors have editable settings on **Detectors → Configure operational detectors**.
+Settings changes use the same signed INTYGA action flow as switching a detector on/off.
+
+**`provider-alerts`** imports medium-or-higher native alerts from AWS EventBridge, Google Cloud
+Monitoring, Google Workspace Alert Center, Azure Monitor, Grafana, Prometheus Alertmanager, Stripe
+and Better Stack. These eight additions bring the catalogue to 21 connectors. Search the catalogue
+by provider or use its categories; every card explains its implemented detector coverage.
+Native alerts are labelled as provider-reported conditions, not independent anomaly assessments.
+Explicit provider recovery closes only the matching incident; silence and acknowledgement do not.
+See [setup recipes, coverage limits and the expansion plan](docs/CONNECTORS.md#native-provider-integrations).
+
+| Detector              | Condition                                                                                                     | Setup                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `collection-health`   | Three failed polls in a row, or a recorded gap over 15 minutes when polling resumes (defaults).               | Automatic for active polling connectors. Successful empty polls are healthy; push silence is not a failed poll.                              |
+| `ci-health`           | Three failed workflow runs or a failure at least 30 minutes old without a later collected success (defaults). | Select connector, repository, branch and exact workflow name. GitHub Actions or signed `ci_run` events.                                      |
+| `merge-policy`        | GitHub recorded an accepted bypass with a failed active review or required-check rule.                        | Select GitHub repositories/branches with rulesets; token needs **Administration: read** in addition to normal connector permissions.         |
+| `job-overdue`         | No successful completion within the configured interval plus grace.                                           | Select a custom webhook, job name, start time, interval and grace; emit `job.completed` after successful backups, syncs or scheduled checks. |
+| `service-degradation` | Both short and long windows exceed the configured error-budget burn threshold.                                | Select a custom webhook and objective; emit complete one-minute `slo.sample` aggregates for errors or slow requests.                         |
+
+All but collection health start with no targets. [Webhook examples and setup details](docs/CONNECTORS.md#operational-detector-events)
+cover non-Git systems. SLO defaults: 99.9% success, 5m/60m windows, 14.4× burn and at least 100 requests
+per window. Missing or conflicting minute aggregates mean unknown health and produce no degradation
+finding. Job and SLO targets support a maintenance end time. Job intervals restart after maintenance;
+SLO monitoring waits for a complete post-maintenance window.
+
+Changing operational settings or re-enabling a detector starts a fresh monitoring period; old events
+are not replayed. Job monitoring starts no earlier than its configured start, connector activation,
+or latest settings change. Repeated ticks over identical evidence do not reopen dismissed findings.
+Healthy data stops new detections; existing findings remain available for human resolution.
+These five detectors use deterministic evidence and do not request model anomaly scores.
+
+Collection health runs inside the scheduler: it cannot report a stopped scheduler until polling
+resumes. Use an external uptime/dead-man monitor for that. CI failures older than 24 hours or GitHub
+collection errors are treated as unknown. GitHub polling is bounded to 50 recent runs per repository;
+high-volume repositories that exceed a day's coverage report a collection error. Ruleset collection
+looks back one day, at most 500 evaluations per target and 40 bypass details per connector per tick;
+incomplete coverage reports a collection error and retains cursors for retry. Classic branch
+protection without ruleset evaluations is not covered. A recorded bypass can be an authorized
+exception: it is a review finding, not proof of misconduct.
+
+The merge detector uses [GitHub's historical rule-suite API](https://docs.github.com/en/rest/repos/rule-suites).
+The service detector follows the [multiwindow burn-rate approach](https://sre.google/workbook/alerting-on-slos/).
+
 Adding a detector: a pure function in `src/domain/detectors/`, an entry in
 `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. Failures are isolated per
 detector, so a new one cannot take the working ones down with it.
@@ -235,7 +303,7 @@ and [`.env.production.example`](.env.production.example)._
 
 ### Prerequisites
 
-- **Node.js** `v24+` and **pnpm** `v10+`
+- **Node.js** `v26+` and **pnpm** `v10+`
 - **Docker & Docker Compose** (for PostgreSQL)
 - **An INTYGA workspace** with a SERVICE key and trust anchor (OIDC is optional) — see
   [Read this first](#read-this-first). INTYGA Cloud (`app.intyga.com`) is not generally available
@@ -244,8 +312,8 @@ and [`.env.production.example`](.env.production.example)._
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/intyga-dev/intyga-intelligence.git
-cd intyga-intelligence
+git clone https://github.com/intyga-dev/intelligence.git
+cd intelligence
 cp .env.example .env
 pnpm install
 ```
@@ -316,14 +384,27 @@ Service or activate a connector and approve directly in Intelligence. If the rul
 one approver, share the application approval link with other enrolled workspace members.
 Intelligence verifies and redeems the completed approval before making the change.
 
+The approval dialog separates review, passkey entry, workspace approval and applied states. A
+successful signature alone never shows the change as applied. Action toasts report progress,
+failures and success; saved feedback and approved changes keep their success message across reloads.
+Styles live in `src/ui/*.module.css`, served through a fixed asset allowlist. This server-rendered
+app uses component selectors for scoping and does not require a frontend bundler.
+
 ---
+
+## Your display name
+
+Choose **Edit your name** beside your signed-in identity, or open `/profile`. Save a name of
+1–80 characters for activity attribution. It persists across sign-ins. This is a display
+preference: it does not change your INTYGA identity, workspace role, passkeys or recorded actor IDs.
 
 ## Adding connectors
 
 1. Navigate to **Connectors** (`http://localhost:4100/connectors`).
 2. Under **Add a connector**, select an integration.
 3. Enter a label (e.g. `INTYGA Staging`, `GitHub Production`).
-4. Copy the unique **webhook ingestion URL** and one-time **signing secret** into your provider.
+4. Follow the integration's setup instructions: push connectors supply an ingestion URL and
+   authentication details; polling connectors use the credentials you entered.
 5. Click **Turn on** — this requires an administrator passkey tap, because it starts a data flow.
 
 The connector page distinguishes setup pending, awaiting a first poll or delivery, successful
@@ -332,6 +413,22 @@ summary and the time of the last successful poll. A successful empty poll is nor
 silence is not treated as an outage. Setup instructions remain available after activation.
 
 ## Investigating findings
+
+The default view shows findings backed by detector evidence beyond path sensitivity. **Observations**
+holds routine sensitive-code changes for review; **Everything** includes both. API clients can use
+`kind=finding`, `kind=observation`, or `kind=all` (the API default). Model confidence labels name the
+answer they describe: severity confidence is not confidence in an anomaly score.
+
+To update existing path-only findings after upgrading, preview and then apply the reclassification:
+
+```bash
+pnpm exec tsx scripts/reclassify-observations.ts <tenant-id>
+pnpm exec tsx scripts/reclassify-observations.ts <tenant-id> --apply
+```
+
+This preserves IDs, timestamps, counts, feedback and historical model request records. It updates
+the review context from stored events, sets informational severity, and removes unsupported model
+scores from observation cards. It does not poll providers, call a model, or deliver alerts.
 
 On **Findings**, combine status, severity and category filters with a search over titles, summaries
 or a finding ID. Choose highest priority or most recently seen. Priority is applied before
@@ -354,21 +451,23 @@ the console defaults to open findings and 25 per page. Invalid filters return HT
 
 ### Ingestion
 
-`POST /ingest/:kind/:connectionId` is the only inbound data path. Deliveries are verified by HMAC
-over the raw bytes, stored idempotently under the provider's own event id, then normalized. It
-authenticates per request by signature and never by a session.
+`POST /ingest/:kind/:connectionId` is the only inbound data path. Each connector authenticates
+deliveries using its documented signature, shared secret or HTTP Basic credentials. Signed payloads
+are checked against the raw bytes. Accepted deliveries are stored idempotently by source event ID
+and normalized; browser sessions do not authenticate webhook deliveries.
 
 The endpoint is internet-facing by definition, so it spends two token buckets before doing any work
 — one global, one per connection — bounding the CPU and the rows an unauthenticated caller can cost.
-They are a **cost guard, not an authentication control**; the HMAC is what decides whether a delivery
-is real. See [`src/server/ratelimit.ts`](src/server/ratelimit.ts) for what they do and do not bound,
+They are a **cost guard, not an authentication control**; each connector's authentication check
+decides whether a delivery is accepted. See [`src/server/ratelimit.ts`](src/server/ratelimit.ts) for what they do and do not bound,
 including why they are deliberately not keyed on the client address.
 
 ### Detection tick
 
-`POST /internal/tick` polls the poll-mode connectors and runs the detectors. Driven externally
-rather than by an in-process timer, so a restart does not skip a window and a second replica does
-not double-run. Protected by a bearer token (`TICK_TOKEN`), compared in constant time:
+`POST /internal/tick` polls active polling connectors, runs detection and delivers alerts. An
+external scheduler calls it once a minute. The overlap guard is in-process: run one application
+instance and one scheduler, and monitor scheduler failures independently. A restart or outage can
+leave collection gaps. The endpoint requires a bearer token (`TICK_TOKEN`), compared in constant time:
 
 ```bash
 curl -X POST http://localhost:4100/internal/tick \
@@ -431,37 +530,52 @@ and turning it on requires an administrator passkey signature.
   not a refactor.
 - `/judgment` in the console shows the exact request body that would be sent, before you enable
   anything.
+- Questions use versioned guidance for code/delivery, identity/access, cloud operations,
+  monitoring/reliability, payments, and other sources. Mixed evidence receives all relevant guidance.
+  Routine merges are expected; a denial can mean a control worked; a dispute can need attention
+  without being anomalous. Missing context stays uncertain. Provider alert titles are excluded.
+  Status and metric-window duration are included; repeated observations are not independent incidents.
+  The exact prompt participates in the assessment cache digest and request audit record.
+- Operational and native-provider detectors remain deterministic and do not automatically invoke
+  Jev. Group guidance applies whenever a finding is projected for judgment or previewed. Prompt
+  tests verify routing and payload safety, not the quality or calibration of a live model's answers.
 
 ---
 
 ## Environment configuration
 
-| Variable                             | Description                                                                                                                              | Default                                |
-| :----------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------- |
-| `PORT`                               | HTTP port the console and ingest API bind to.                                                                                            | `4100`                                 |
-| `PUBLIC_URL`                         | Canonical instance origin for browser sign-in, approval targets and webhook links.                                                       | Required                               |
-| `INTYGA_CONSOLE_URL`                 | Console where workspace members approve requests.                                                                                        | Required                               |
-| `DATABASE_URL`                       | PostgreSQL connection string.                                                                                                            | Required                               |
-| `DIRECT_URL`                         | Direct connection string for Prisma migrations (bypasses any pooler).                                                                    | Required                               |
-| `TICK_TOKEN`                         | Bearer token protecting `POST /internal/tick`.                                                                                           | Required in production                 |
-| `SECRETS_ENC_KEY`                    | 32-byte base64 key encrypting connection credentials at rest.                                                                            | Required in production                 |
-| `INTYGA_URL`                         | INTYGA gateway URL for sign-in and approval requests.                                                                                    | None                                   |
-| `INTYGA_INTERNAL_URL`                | Optional HTTPS server route to `INTYGA_URL`; browser redirects and issuer verification still use the public URL.                         | None                                   |
-| `INTYGA_WORKSPACE_ID`                | Workspace ID required in tokens, receipts and the trust anchor.                                                                          | None                                   |
-| `INTYGA_OIDC_CLIENT_ID`              | Optional public App sign-in client ID; callback is `<origin>/auth/callback`.                                                             | None                                   |
-| `INTYGA_SERVICE_CLIENT_ID`           | SERVICE API key client ID, used to request approvals.                                                                                    | None                                   |
-| `INTYGA_SERVICE_CLIENT_SECRET`       | SERVICE API key secret.                                                                                                                  | None                                   |
-| `INTYGA_TRUST_ANCHOR_FILE`           | Online application anchor exported from Member applications (console anchor from Approval Rules for non-embedded mode). Mount read-only. | Required for sign-in/actions           |
-| `INTYGA_EMBEDDED_APPLICATION_ID`     | Registered member application UUID. Enables in-page passkey ceremonies.                                                                  | None                                   |
-| `INTYGA_EMBEDDED_REGISTRATION_FILE`  | Short-lived ownership proof JSON served at the well-known URL.                                                                           | None                                   |
-| `INGEST_RATE_GLOBAL_PER_MIN`         | Aggregate ingest allowance across all connectors.                                                                                        | `1200`                                 |
-| `INGEST_RATE_PER_CONNECTION_PER_MIN` | Per-connection ingest allowance.                                                                                                         | `300`                                  |
-| `TYPESAFE_API_KEY`                   | _(Optional)_ Judgment provider key. Unset ⇒ null provider.                                                                               | None                                   |
-| `TYPESAFE_MODEL`                     | Judgment model.                                                                                                                          | `jev-latest`                           |
-| `TYPESAFE_ENDPOINT`                  | Judgment endpoint.                                                                                                                       | `https://api.typesafe.ai/v1/systemone` |
-| `TYPESAFE_TIMEOUT_MS`                | Judgment request timeout.                                                                                                                | `10000`                                |
-| `GITHUB_TOKEN`                       | _(Optional)_ Read-only fine-grained PAT for repository polling.                                                                          | None                                   |
-| `LOG_LEVEL`                          | Pino log level.                                                                                                                          | `info`                                 |
+Set connection variables explicitly; an unconfigured instance refuses sign-in and protected changes.
+Leave unused optional variables unset rather than assigning a placeholder string.
+
+| Variable                             | Purpose                                                                                      | Requirement or default                             |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `NODE_ENV`                           | Runtime mode; use `production` for a deployed instance.                                      | `development`                                      |
+| `PORT`                               | HTTP listener port.                                                                          | `4100`                                             |
+| `PUBLIC_URL`                         | Exact browser origin, approval target and webhook-link base.                                 | Required                                           |
+| `DATABASE_URL`                       | Intelligence PostgreSQL connection.                                                          | Required                                           |
+| `DIRECT_URL`                         | Direct database connection for Prisma migrations.                                            | Required for migrations                            |
+| `TICK_TOKEN`                         | Bearer token for `POST /internal/tick`.                                                      | Required in production                             |
+| `SECRETS_ENC_KEY`                    | Encryption key for stored credentials and browser state; generate 32 random bytes as base64. | Required in production                             |
+| `INTYGA_URL`                         | Gateway origin for sign-in and approval requests.                                            | Required                                           |
+| `INTYGA_CONSOLE_URL`                 | INTYGA console origin for member linking and hosted approval mode.                           | Required                                           |
+| `INTYGA_WORKSPACE_ID`                | Workspace named by tokens, receipts and the trust anchor.                                    | Required                                           |
+| `INTYGA_SERVICE_CLIENT_ID`           | SERVICE API key client ID.                                                                   | Required                                           |
+| `INTYGA_SERVICE_CLIENT_SECRET`       | SERVICE API key secret.                                                                      | Required                                           |
+| `INTYGA_TRUST_ANCHOR_FILE`           | Read-only online application anchor; use a console anchor for hosted mode.                   | Required for sign-in/actions                       |
+| `INTYGA_EMBEDDED_APPLICATION_ID`     | Member application UUID for in-page passkey ceremonies.                                      | Required for embedded mode                         |
+| `INTYGA_EMBEDDED_REGISTRATION_FILE`  | Short-lived ownership proof JSON.                                                            | Required during application ownership verification |
+| `INTYGA_OIDC_CLIENT_ID`              | Public App sign-in client; callback is `<origin>/auth/callback`.                             | Optional                                           |
+| `INTYGA_INTERNAL_URL`                | Private HTTPS route to the same gateway; public issuer checks stay unchanged.                | Optional                                           |
+| `INGEST_RATE_GLOBAL_PER_MIN`         | Aggregate ingest allowance.                                                                  | `1200`                                             |
+| `INGEST_RATE_PER_CONNECTION_PER_MIN` | Per-connection ingest allowance.                                                             | `300`                                              |
+| `TYPESAFE_API_KEY`                   | Optional judgment provider key; configure judgment explicitly before use.                    | Optional                                           |
+| `TYPESAFE_MODEL`                     | Judgment model.                                                                              | `jev-latest`                                       |
+| `TYPESAFE_ENDPOINT`                  | Judgment endpoint.                                                                           | `https://api.typesafe.ai/v1/systemone`             |
+| `TYPESAFE_TIMEOUT_MS`                | Judgment request timeout.                                                                    | `10000`                                            |
+| `GITHUB_TOKEN`                       | Read-only GitHub token for operator helpers; normally configure credentials per connector.   | Optional                                           |
+| `GITHUB_API_BASE`                    | GitHub API base URL, including an Enterprise API path when applicable.                       | `https://api.github.com`                           |
+| `INTYGA_TIMEOUT_MS`                  | INTYGA request timeout in milliseconds.                                                      | `10000`                                            |
+| `LOG_LEVEL`                          | Pino log level.                                                                              | `info`                                             |
 
 The `JEV_API_KEY`, `JEV_MODEL` and `JEV_ENDPOINT` names are the earlier spelling and are still read
 for compatibility. Set one family, not both — the `TYPESAFE_*` name wins silently.
@@ -488,8 +602,10 @@ pnpm exec tsx scripts/e2e-demo.ts <connectionId> <webhookSecret> http://localhos
 
 ## Contributing and security
 
-- [Deployment runbook](docs/RELEASE_RUNBOOK.html) — the 7 November release checklist for Core,
-  package publishing, and Intelligence. Open the HTML file in a browser to save your checks locally.
+- [Release guide](docs/RELEASING.md) — versioning, CI, upgrade checks and publication for 1.0.0.
+- [Changelog](CHANGELOG.md) — shipped behavior and upgrade notes.
+- [Historical rollout checklist](docs/RELEASE_RUNBOOK.html) — the earlier Core/package rollout snapshot;
+  its versions, branches and notification notes are superseded by the release guide.
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to propose a change, and the two rules a pull request
   here has to clear.

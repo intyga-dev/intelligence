@@ -17,7 +17,7 @@ async function embeddedPasskey(options, create) {
   const r = credential.response;
   const response = {clientDataJSON:encode64(r.clientDataJSON)};
   if (create) {response.attestationObject=encode64(r.attestationObject);response.transports=r.getTransports ? r.getTransports() : [];}
-  else {response.authenticatorData=encode64(r.authenticatorData);response.signature=encode64(r.signature);response.userHandle=r.userHandle ? encode64(r.userHandle) : null;}
+  else {response.authenticatorData=encode64(r.authenticatorData);response.signature=encode64(r.signature);if(r.userHandle && r.userHandle.byteLength) response.userHandle=encode64(r.userHandle);}
   return {id:credential.id,rawId:encode64(credential.rawId),type:credential.type,clientExtensionResults:credential.getClientExtensionResults(),response,...(credential.authenticatorAttachment ? {authenticatorAttachment:credential.authenticatorAttachment} : {})};
 }
 async function signEmbedded(optionsPath, verifyPath, body) {

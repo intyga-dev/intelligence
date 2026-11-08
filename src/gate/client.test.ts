@@ -50,8 +50,10 @@ test("an opened approval uses the console and the gateway nonce", async () => {
     timeoutSeconds: 60,
   })
   assert.equal(result.nonce, gateway.state.nonce)
-  assert.equal(new URL(result.approveUrl).origin, gateway.config.consoleUrl)
-  assert.equal(new URL(result.approveUrl).searchParams.get("nonce"), result.nonce)
+  assert.ok(result.approveUrl, "hosted approvals must include a console approval URL")
+  const approveUrl = new URL(result.approveUrl)
+  assert.equal(approveUrl.origin, gateway.config.consoleUrl)
+  assert.equal(approveUrl.searchParams.get("nonce"), result.nonce)
   assert.equal(gateway.state.authorizeCalls[0]?.target, action.target)
 })
 
@@ -63,6 +65,53 @@ test("a valid receipt is checked then consumed against the frozen action", async
     signedReceipt(gateway.state.nonce, action),
   )
   assert.deepEqual(gateway.state.consumeCalls, [{ nonce: gateway.state.nonce, ...action }])
+})
+
+test("embedded requests use application routing and return no console approval link", async () => {
+  const result = await openApproval(
+    { ...gateway.config, embeddedApplicationId: "application-test" },
+    {
+      ...action,
+      description: "Create API",
+      timeoutSeconds: 60,
+    },
+  )
+  assert.equal(result.nonce, gateway.state.nonce)
+  assert.equal(result.approveUrl, undefined)
+  assert.ok(gateway.state.requests.includes("/embedded/applications/application-test/authorize"))
+  assert.ok(!gateway.state.requests.includes("/authorize"))
+  assert.deepEqual(gateway.state.authorizeCalls, [
+    { ...action, actionDescription: "Create API", timeout: 60 },
+  ])
+})
+
+test("an old or refusing gateway never falls back to hosted approval", async (t) => {
+  for (const status of [404, 403, 500]) {
+    const urls: string[] = []
+    const mock = t.mock.method(globalThis, "fetch", async (url: string) => {
+      urls.push(url)
+      return url.endsWith("/oauth/token")
+        ? Response.json({ access_token: "test-token" })
+        : Response.json({ error: "upstream-private-detail" }, { status })
+    })
+    try {
+      await assert.rejects(
+        openApproval(
+          { ...gateway.config, embeddedApplicationId: "application-test" },
+          {
+            ...action,
+            description: "Create API",
+            timeoutSeconds: 60,
+          },
+        ),
+        status === 404 ? /routing update/ : GateRefused,
+      )
+      assert.equal(urls.length, 2)
+      assert.ok(urls[1]?.endsWith("/embedded/applications/application-test/authorize"))
+    } finally {
+      mock.mock.restore()
+    }
+  }
 })
 
 test("bad signatures, wrong nonces, changed parameters and untrusted signers never reach redemption", async () => {

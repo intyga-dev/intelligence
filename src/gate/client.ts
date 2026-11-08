@@ -9,17 +9,16 @@ import {
   verifyApprovalReceipt,
 } from "@intyga/sdk"
 import { gatewayTransportUrl } from "./transport.ts"
+import { z } from "zod"
+import { embeddedRequest } from "./embedded.ts"
+import { GateError, GateRefused, GateUnavailable } from "./errors.ts"
+export { GateError, GateRefused, GateUnavailable, GateNotConfigured } from "./errors.ts"
 
 // Intelligence uses ordinary INTYGA approvals (ADRs 030–031). A SERVICE key asks; an eligible
 // member signs with an application passkey (embedded), or at the console in non-embedded mode.
 // This gate verifies against frozen parameters and the deployment's pinned keys and origin,
 // then requires one-use redemption. A bad anchor can refuse legitimate actions, but cannot
 // bypass the gateway's policy and membership checks. No approval authority is held here.
-
-export class GateError extends Error {}
-export class GateRefused extends GateError {}
-export class GateUnavailable extends GateError {}
-export class GateNotConfigured extends GateError {}
 
 export interface GateConfig {
   /** The gateway, e.g. https://api.intyga.com. */
@@ -31,6 +30,8 @@ export interface GateConfig {
   /** The SERVICE identity's API key (client credentials). Asks for approvals; grants nothing. */
   serviceClientId: string
   serviceSecret: string
+  /** Registered application whose passkeys must sign, instead of the hosted console ceremony. */
+  embeddedApplicationId?: string
   /** The approvers this instance trusts, as exported from the console (Approval Rules → Export). */
   trustAnchor: TrustAnchorFile
 }
@@ -97,12 +98,23 @@ export interface ApprovalRequest {
   timeoutSeconds: number
 }
 
-/** Step one: open an approval. Returns the nonce and the console link the approver signs at. */
+/** Open the configured ceremony. Embedded requests must never fall back to hosted notifications. */
 export async function openApproval(
   cfg: GateConfig,
   req: ApprovalRequest,
-): Promise<{ nonce: string; approveUrl: string }> {
+): Promise<{ nonce: string; approveUrl?: string }> {
   try {
+    if (cfg.embeddedApplicationId) {
+      return z.object({ nonce: z.string().min(8).max(200) }).parse(
+        await embeddedRequest(cfg, "authorize", {
+          actionDescription: req.description,
+          target: req.target,
+          actionType: req.actionType,
+          params: req.params,
+          timeout: req.timeoutSeconds,
+        }),
+      )
+    }
     const res = await client(cfg).authorize(req.description, {
       target: req.target,
       actionType: req.actionType,

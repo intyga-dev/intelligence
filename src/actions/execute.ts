@@ -25,7 +25,7 @@ export interface OpenedAction {
   nonce: string
   summary: string
   impact: "low" | "medium" | "high"
-  /** Where the approver signs: the console's /approve page for this nonce. */
+  /** Where the approver signs: the application share link or hosted console ceremony. */
   approveUrl: string
   embeddedApprovalUrl?: string
   embedded?: boolean
@@ -68,6 +68,10 @@ export async function openAction(input: {
     timeoutSeconds: APPROVAL_TTL_SECONDS,
   })
   const expiresAt = new Date(Date.now() + APPROVAL_TTL_SECONDS * 1000)
+  const approveUrl = cfg.embeddedApplicationId
+    ? embeddedApprovalLink(cfg, opened.nonce, expiresAt.getTime())
+    : opened.approveUrl
+  if (!approveUrl) throw new ActionError("INTYGA did not provide an approval ceremony.")
   await prisma.pendingAction.create({
     data: {
       tenantId: input.tenantId,
@@ -77,7 +81,7 @@ export async function openAction(input: {
       // Frozen. Step two reads these, never a later request.
       params: params as object,
       target,
-      approveUrl: opened.approveUrl,
+      approveUrl,
       actorExternalId: input.actor.externalId,
       expiresAt,
     },
@@ -86,12 +90,10 @@ export async function openAction(input: {
     nonce: opened.nonce,
     summary,
     impact: def.impact,
-    approveUrl: opened.approveUrl,
+    approveUrl,
     expiresAt: expiresAt.toISOString(),
     embedded: Boolean(cfg.embeddedApplicationId),
-    ...(cfg.embeddedApplicationId
-      ? { embeddedApprovalUrl: embeddedApprovalLink(cfg, opened.nonce, expiresAt.getTime()) }
-      : {}),
+    ...(cfg.embeddedApplicationId ? { embeddedApprovalUrl: approveUrl } : {}),
   }
 }
 

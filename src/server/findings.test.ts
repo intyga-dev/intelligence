@@ -66,6 +66,141 @@ function get(url: string) {
   return app.inject({ method: "GET", url, headers: { cookie } })
 }
 
+test("members can name their own account and historical activity without changing actor identity", {
+  skip,
+}, async () => {
+  const f = await finding()
+  await app.inject({
+    method: "POST",
+    url: `/api/findings/${f.id}/feedback`,
+    headers: { cookie },
+    payload: { verdict: "investigating" },
+  })
+  const foreign = await prisma.tenant.create({ data: { slug: "foreign-profile", name: "Foreign" } })
+  await prisma.member.create({
+    data: { tenantId: foreign.id, externalId: "investigator@example.test", label: "Foreign name" },
+  })
+  await prisma.member.updateMany({ where: { tenantId }, data: { role: "MEMBER" } })
+  const name = "Ada <Team>"
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/profile",
+    headers: { cookie, origin: deployment.env.PUBLIC_URL },
+    payload: { name: ` ${name} ` },
+  })
+  assert.equal(response.statusCode, 200, response.body)
+  const feedback = (await get(`/api/findings?q=${f.id}`)).json().findings[0].feedback[0]
+  assert.equal(feedback.actor, "investigator@example.test")
+  assert.equal(feedback.actorLabel, name)
+  assert.equal(
+    (await prisma.member.findFirstOrThrow({ where: { tenantId: foreign.id } })).label,
+    "Foreign name",
+  )
+  assert.equal((await prisma.member.findFirstOrThrow({ where: { tenantId } })).role, "MEMBER")
+  assert.match((await get("/profile")).body, /Ada &lt;Team&gt;/)
+  assert.match((await get(`/findings?q=${f.id}`)).body, /investigating by Ada &lt;Team&gt;/)
+})
+
+test("profile updates require the own session, same origin and a valid name", { skip }, async () => {
+  assert.equal(
+    (await app.inject({ method: "POST", url: "/api/profile", payload: { name: "Stranger" } })).statusCode,
+    401,
+  )
+  for (const origin of [undefined, "https://another.example"]) {
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/profile",
+          headers: { cookie, ...(origin ? { origin } : {}) },
+          payload: { name: "Stranger" },
+        })
+      ).statusCode,
+      403,
+    )
+  }
+  for (const payload of [
+    { name: " " },
+    { name: "x".repeat(81) },
+    { name: "Forged", memberId: "another" },
+    { name: "Forged", role: "ADMIN" },
+  ]) {
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/profile",
+          headers: { cookie, origin: deployment.env.PUBLIC_URL },
+          payload,
+        })
+      ).statusCode,
+      400,
+    )
+  }
+  assert.equal((await prisma.member.findFirstOrThrow()).label, "Investigator")
+})
+
+test("GitHub editing is tenant scoped, admin only and never exposes the stored token", { skip }, async () => {
+  const connection = await prisma.connection.create({
+    data: {
+      tenantId,
+      kind: "github",
+      label: "GitHub",
+      config: { repos: "acme/core, acme/deploy" },
+      secretCiphertext: "never-render-this",
+    },
+  })
+  const edit = await get(`/connectors/${connection.id}/edit`)
+  assert.equal(edit.statusCode, 200)
+  assert.match(edit.body, /acme\/core, acme\/deploy/)
+  assert.doesNotMatch(edit.body, /never-render-this/)
+  assert.match((await get("/connectors")).body, /Edit configuration/)
+  const other = await prisma.tenant.create({ data: { slug: "foreign-edit", name: "Foreign" } })
+  const foreign = await prisma.connection.create({
+    data: { tenantId: other.id, kind: "github", label: "Foreign" },
+  })
+  assert.equal((await get(`/connectors/${foreign.id}/edit`)).statusCode, 404)
+  const { ACTIONS } = await import("../actions/registry.ts")
+  const definition = ACTIONS["intelligence.connector.configure-github"]
+  const params = {
+    connectionId: foreign.id,
+    label: "Renamed",
+    repos: "acme/core",
+    deployWorkflows: "",
+    pathMap: "generic" as const,
+  }
+  await assert.rejects(definition.run(tenantId, params, { nonce: "test-only" }), /not found in this tenant/)
+  for (const repos of ["", "invalid", "a/b, ../..", Array(21).fill("a/b").join(",")])
+    assert.equal(definition.schema.safeParse({ ...params, repos }).success, false)
+  assert.equal(definition.schema.safeParse({ ...params, token: "never-sign-secrets" }).success, false)
+  await prisma.member.updateMany({ where: { tenantId }, data: { role: "MEMBER" } })
+  assert.equal((await get(`/connectors/${connection.id}/edit`)).statusCode, 403)
+})
+
+test("review observations have their own view and never inflate the findings overview", {
+  skip,
+}, async () => {
+  const observation = await finding({
+    dedupeKey: "sensitive:c:repo#1",
+    title: "Routine PR change",
+    severity: "info",
+    category: "engineering",
+  })
+  await finding({ dedupeKey: "regression:c:run", title: "Errors after deployment" })
+  const main = await get("/findings")
+  assert.match(main.body, /Errors after deployment/)
+  assert.doesNotMatch(main.body, /Routine PR change/)
+  const observations = await get("/findings?kind=observation")
+  assert.match(observations.body, /Routine PR change/)
+  assert.doesNotMatch(observations.body, /Errors after deployment/)
+  assert.match(observations.body, /review observation/)
+  assert.equal((await get("/api/findings?kind=finding")).json().total, 1)
+  assert.equal((await get("/api/findings?kind=observation")).json().total, 1)
+  assert.equal((await get("/api/findings")).json().total, 2, "API keeps all kinds unless filtered")
+  assert.match((await get(`/findings?kind=all&status=all&q=${observation.id}`)).body, /Routine PR change/)
+  assert.doesNotMatch((await get("/")).body, /Routine PR change/)
+})
+
 test("service assignment scopes history and subsequent ingestion without moving prior incidents", {
   skip,
 }, async () => {

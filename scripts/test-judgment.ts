@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx
+import { QUESTION_SET } from "../src/redaction/guidance.ts"
 // Test Judgment against TypeSafe AI (JEV).
 //
 // Reads the latest finding from the database (or falls back to a sample finding),
@@ -29,7 +30,7 @@ async function main() {
   let liveFindingId: string | null = null
 
   if (tenants.length > 0) {
-    const findings = await listFindings(tenants[0].id, { limit: 1 })
+    const findings = await listFindings(tenants[0].id, { kind: "finding", limit: 1 })
     if (findings.length > 0) {
       liveFindingId = findings[0].id
       console.log(
@@ -125,6 +126,7 @@ async function main() {
         answer: data.answers.anomalous?.noul ?? 0,
         probability: data.answers.anomalous?.noul,
         confidence: data.answers.severity?.confidence,
+        confidenceFor: "severity",
         stateDigest,
       }
 
@@ -143,7 +145,7 @@ async function main() {
           data: {
             tenantId: tenants[0].id,
             findingId: liveFindingId,
-            questionSet: "systemone-v0",
+            questionSet: QUESTION_SET,
             status: "DONE",
             attempts: 1,
             sentState: payload as object,

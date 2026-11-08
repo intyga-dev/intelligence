@@ -75,7 +75,7 @@ test("an unknown map name falls back to the generic map, never to nothing", () =
   assert.equal(pathMapFor("intyga-core").id, "intyga-core")
 })
 
-test("a PR touching auth produces one finding with the hit paths as evidence", () => {
+test("a PR touching auth produces an informational review observation with the hit paths as evidence", () => {
   const found = detectSensitiveChanges({
     tenantId: "t",
     events: [pr(7, ["src/auth/login.ts", "src/ui/page.tsx"])],
@@ -85,11 +85,37 @@ test("a PR touching auth produces one finding with the hit paths as evidence", (
   assert.equal(found.length, 1)
   const f = found[0]
   assert.ok(f)
-  assert.equal(f.severity, "high")
+  assert.equal(f.severity, "info")
+  assert.equal(f.category, "engineering")
+  assert.match(f.title, /^Review observation:/)
   assert.equal(f.dedupeKey, "sensitive:c1:acme/app#7")
   const ev = f.evidence[0]
   assert.equal(ev.kind, "codeChange")
   assert.deepEqual(ev.kind === "codeChange" ? ev.paths : [], ["src/auth/login.ts"])
+})
+
+test("merging sensitive code does not establish an anomaly or increase severity", () => {
+  for (const merged of [false, true]) {
+    const found = detectSensitiveChanges({
+      tenantId: "t",
+      events: [pr(8, ["src/auth/login.ts"], { merged })],
+      now: NOW,
+      mapFor: generic,
+    })
+    assert.equal(found[0]?.severity, "info")
+    assert.match(found[0]?.summary ?? "", /does not establish unusual behavior/)
+    assert.ok(!found[0]?.evidence.some((e) => e.kind === "assessment"))
+  }
+})
+
+test("closed unmerged PRs are not labelled open", () => {
+  const found = detectSensitiveChanges({
+    tenantId: "t",
+    events: [pr(8, ["src/auth/login.ts"], { state: "closed" })],
+    now: NOW,
+    mapFor: generic,
+  })
+  assert.match(found[0]?.title ?? "", /closed PR/)
 })
 
 test("drafts, noise-only diffs and unreadable events produce nothing", () => {

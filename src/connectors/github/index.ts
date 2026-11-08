@@ -1,6 +1,7 @@
 import { config } from "../../config.ts"
 import type { ConnectorContext, PollConnector } from "../registry.ts"
 import type { NormalizedEvent } from "../types.ts"
+import { pollRuleSuites } from "./ruleSuites.ts"
 
 // The GitHub connector.
 //
@@ -47,6 +48,8 @@ interface GhRun {
   id: number
   name: string | null
   head_sha: string
+  head_branch?: string
+  run_attempt?: number
   status: string
   conclusion: string | null
   created_at: string
@@ -135,7 +138,7 @@ export const githubConnector: PollConnector = {
       name: "token",
       label: "GitHub token",
       placeholder: "github_pat_…",
-      help: "Fine-grained, READ-ONLY: contents:read, pull_requests:read, actions:read. Nothing here writes.",
+      help: "Fine-grained, READ-ONLY: Contents, Pull requests, Actions. Optional merge-controls monitoring also needs Administration read. Nothing here writes.",
       required: true,
       secret: true,
     },
@@ -143,7 +146,7 @@ export const githubConnector: PollConnector = {
 
   setup: [
     "Create a fine-grained personal access token scoped to the repositories above.",
-    "Grant read-only: Contents, Pull requests, Actions. Grant nothing else.",
+    "Grant read-only: Contents, Pull requests, Actions. Only if you configure merge-controls monitoring, also grant Administration read for historical ruleset evaluations.",
     "Paste it as the token. It is encrypted at rest and never returned by the API.",
     "Events appear within a minute or two of the next tick.",
   ],
@@ -239,10 +242,19 @@ export const githubConnector: PollConnector = {
         `/repos/${repo}/actions/runs?per_page=${MAX_RUNS_PER_REPO}`,
       )
       let newestRun = runCursor
+      // Coverage is unknown when the bounded page is full. Do not claim sustained CI failure
+      // from a history that may omit a successful retry of an older run.
+      if (
+        (runs?.workflow_runs?.length ?? 0) >= MAX_RUNS_PER_REPO &&
+        runs?.workflow_runs.every((r) => new Date(r.created_at).getTime() > Date.now() - 86_400_000)
+      )
+        ctx.log("recent workflow history truncated")
 
       for (const run of runs?.workflow_runs ?? []) {
         const at = new Date(run.updated_at)
-        if (at <= runsSince) continue
+        // Re-read recent completed attempts: GitHub sorts by creation time, while a retry can
+        // update an older run below the cursor. Event identities make unchanged attempts harmless.
+        if (at < new Date(Date.now() - 86_400_000) && at <= runsSince) continue
         if (!newestRun || at > new Date(newestRun)) newestRun = run.updated_at
         if (run.status !== "completed") continue
 
@@ -252,13 +264,16 @@ export const githubConnector: PollConnector = {
         out.push({
           connectionId: ctx.connectionId,
           source: "github",
-          sourceId: `run:${repo}#${run.id}`,
+          sourceId: `run:${repo}#${run.id}:attempt:${run.run_attempt ?? 1}`,
           kind: isDeploy ? "github.deployment" : "github.workflow_run",
           at,
           subjectRef: run.name,
           correlationRef: run.head_sha,
           attrs: {
             repo,
+            branch: run.head_branch ?? "",
+            runId: String(run.id),
+            attempt: run.run_attempt ?? 1,
             workflow: run.name,
             sha: run.head_sha,
             conclusion: run.conclusion ?? "unknown",
@@ -271,6 +286,18 @@ export const githubConnector: PollConnector = {
       if (newestRun) await ctx.setCursor(`run:${repo}`, newestRun)
     }
 
+    // These targets are supplied from signed detector configuration by the poll runner.
+    const targets =
+      typeof ctx.config.policyTargets === "string"
+        ? (JSON.parse(ctx.config.policyTargets) as { repo: string; branch: string }[])
+        : []
+    out.push(
+      ...(await pollRuleSuites(
+        ctx,
+        targets.filter((t) => repos(ctx).includes(t.repo)),
+        (path) => gh(ctx, path),
+      )),
+    )
     return out
   },
 }

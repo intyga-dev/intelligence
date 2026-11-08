@@ -1,21 +1,21 @@
 {
   "name": "intyga-intelligence",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "description": "Operational attention compression: correlates telemetry, CI, deploys and authorization events into a short list of evidence-backed findings.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/intyga-dev/intyga-intelligence.git"
+    "url": "git+https://github.com/intyga-dev/intelligence.git"
   },
-  "homepage": "https://github.com/intyga-dev/intyga-intelligence#readme",
+  "homepage": "https://github.com/intyga-dev/intelligence#readme",
   "bugs": {
-    "url": "https://github.com/intyga-dev/intyga-intelligence/issues"
+    "url": "https://github.com/intyga-dev/intelligence/issues"
   },
   "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.6",
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "dotenv": "^18.0.9",
     "prisma": "^7.10.1",

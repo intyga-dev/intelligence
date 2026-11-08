@@ -1,0 +1,109 @@
+.toastRegion {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9999;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2a30);
+  border-left: 2px solid var(--brand, #9696ee);
+  border-radius: 8px;
+  background: var(--panel, #141417);
+  color: var(--text, #f4f4f5);
+  box-shadow: 0 4px 16px #0005;
+  font-size: 13px;
+  line-height: 1.45;
+  animation: toastIn 0.16s ease-out;
+}
+.toast[data-tone="success"] {
+  border-left-color: var(--green, #2acd91);
+}
+.toast[data-tone="error"] {
+  border-left-color: var(--red, #fd99a6);
+}
+.toast[data-tone="pending"] {
+  border-left-color: var(--amber, #eda805);
+}
+.toastIcon {
+  display: grid;
+  place-items: center;
+  height: 28px;
+  font-weight: 650;
+  font-size: 14px;
+  color: var(--brand, #9696ee);
+}
+.toast[data-tone="success"] .toastIcon {
+  color: var(--green, #2acd91);
+}
+.toast[data-tone="error"] .toastIcon {
+  color: var(--red, #fd99a6);
+}
+.toast[data-tone="pending"] .toastIcon {
+  color: var(--amber, #eda805);
+}
+.toastMessage {
+  align-self: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.toast button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted, #9a9aa4);
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border-radius: 5px;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+.toast button:hover {
+  background: var(--panel-2, #1a1a1e);
+  color: var(--text, #f4f4f5);
+}
+.toast button:focus-visible {
+  outline: 2px solid var(--brand, #9696ee);
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+@media (max-width: 600px) {
+  .toastRegion {
+    right: 16px;
+    bottom: 16px;
+  }
+  dialog[open] .toastRegion {
+    position: static;
+    width: auto;
+    margin: 10px 18px;
+    flex-shrink: 0;
+  }
+}

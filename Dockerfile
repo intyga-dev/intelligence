@@ -1,13 +1,14 @@
-# Intyga Intelligence — runtime image.
+# INTYGA Intelligence — runtime image.
 #
 # Multi-stage so the shipped image carries production dependencies and source only: no dev
 # toolchain, no test fixtures, no build cache. Runs as a non-root user because a service whose whole
 # job is reading other systems' telemetry should hold the least privilege that works.
 
-FROM node:24-slim AS deps
+FROM node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS deps
 WORKDIR /app
-RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
+# Node 26 does not bundle Corepack; install exactly the declared package manager.
+RUN npm install --global "$(node -p 'require("./package.json").packageManager')"
 # Fetch into the store first so a lockfile-only change does not invalidate the whole layer.
 RUN pnpm fetch --prod=false
 COPY . .
@@ -25,11 +26,10 @@ RUN chmod -R a+rX src scripts prisma
 # real host is how a build step ends up touching a live database.
 RUN DIRECT_URL="postgresql://build:build@127.0.0.1:1/build" pnpm exec prisma generate
 
-FROM node:24-slim AS runtime
+FROM node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN corepack enable && \
-    apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -40,7 +40,7 @@ COPY --from=deps /app/prisma.config.ts ./prisma.config.ts
 COPY --from=deps /app/scripts ./scripts
 COPY --from=deps /app/package.json ./package.json
 
-# node:24-slim ships a `node` user (uid 1000). Reuse it rather than minting another.
+# node:26-slim ships a `node` user (uid 1000). Reuse it rather than minting another.
 # Prisma downloads its schema engine (what `migrate deploy` runs) lazily into node_modules on first
 # use. As the runtime user that write is denied, and it would be a network fetch in production anyway.
 # Fetch it here, in THIS stage, so the engine matches this image's OpenSSL. The URL is a placeholder:
@@ -49,8 +49,6 @@ RUN DIRECT_URL="postgresql://build:build@127.0.0.1:1/build" node_modules/.bin/pr
 USER node
 
 EXPOSE 4100
-# tsx runs the TypeScript sources directly, matching how the gateway in the Intyga monorepo is run.
-# tsx straight from node_modules, not `pnpm exec`: pnpm is not in this image for the runtime user,
-# so `pnpm exec` made Corepack download pnpm from the npm registry on EVERY container start — a
-# network dependency at boot (fatal on a locked-down egress) and a fetch from the registry each time.
+# tsx runs the TypeScript sources directly, matching how the gateway in the INTYGA monorepo is run.
+# Invoke the installed tsx directly; runtime startup needs no package manager or registry access.
 CMD ["node_modules/.bin/tsx", "src/server/main.ts"]

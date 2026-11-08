@@ -78,6 +78,53 @@ async function pushPr(tenantId: string, connectionId: string, n: number, sha: st
 
 const sensitive = () => prisma.finding.findMany({ where: { dedupeKey: { startsWith: "sensitive:" } } })
 
+test("historical PR alerts are reclassified without losing feedback or changing observation history", {
+  skip,
+}, async () => {
+  const { tenant, gh } = await setup()
+  await pushPr(tenant.id, gh.id, 1, "a1", ["src/auth/login.ts", "apps/marketing/app/blog/authors.ts"])
+  await runDetectors(new Date())
+  const original = (await sensitive())[0]!
+  await prisma.finding.update({
+    where: { id: original.id },
+    data: { severity: "high", category: "security", status: "dismissed", count: 4 },
+  })
+  await prisma.findingFeedback.create({
+    data: { findingId: original.id, verdict: "expected", actor: "reviewer", note: "Already reviewed" },
+  })
+  await prisma.evidence.create({
+    data: {
+      findingId: original.id,
+      kind: "assessment",
+      ordinal: 2,
+      data: { kind: "assessment", question: "anomalous", answer: 0.68 },
+    },
+  })
+  const { reclassifyObservations } = await import("../store/reclassifyObservations.ts")
+  await reclassifyObservations(tenant.id)
+  assert.equal((await sensitive())[0]?.severity, "high", "preview does not mutate")
+  await reclassifyObservations(tenant.id, true)
+  await reclassifyObservations(tenant.id, true)
+  const row = await prisma.finding.findUniqueOrThrow({
+    where: { id: original.id },
+    include: { evidence: true, feedback: true },
+  })
+  assert.equal(row.severity, "info")
+  assert.equal(row.category, "engineering")
+  assert.equal(row.status, "dismissed")
+  assert.equal(row.count, 4)
+  assert.equal(row.detectedAt.toISOString(), original.detectedAt.toISOString())
+  assert.equal(row.lastSeenAt.toISOString(), original.lastSeenAt.toISOString())
+  assert.equal(row.feedback[0]?.note, "Already reviewed")
+  assert.ok(!row.evidence.some((e) => e.kind === "assessment"))
+  const codeEvidence = row.evidence.find((e) => e.kind === "codeChange")
+  assert.ok(codeEvidence)
+  assert.deepEqual((codeEvidence.data as { paths: string[] }).paths, ["src/auth/login.ts"])
+  await pushPr(tenant.id, gh.id, 1, "a2", ["src/auth/login.ts"])
+  await runDetectors(new Date())
+  assert.equal((await sensitive())[0]?.severity, "info", "future polls keep the observation informational")
+})
+
 test("a pull request is folded into its finding once per push, not once per tick", { skip }, async () => {
   const { tenant, gh } = await setup()
   await pushPr(tenant.id, gh.id, 1, "a1", ["src/auth/login.ts"])
@@ -182,6 +229,15 @@ test("poll request failures are visible, safe to display and cleared on recovery
   assert.ok(row.lastPollError)
   assert.equal(row.lastPollSuccessAt, null)
   assert.doesNotMatch(row.lastPollError, /sensitive-upstream-error/)
+  await runDetectors(new Date(Date.now() + 1000))
+  const repeated = await runDetectors(new Date(Date.now() + 1000))
+  assert.deepEqual(repeated.detectors["collection-health"], { found: 1, created: 1 })
+  const polls = await prisma.event.findMany({
+    where: { connectionId: connection.id, kind: "intelligence.poll" },
+  })
+  assert.equal(polls.length, 3)
+  assert.ok(polls.every((e) => (e.attrs as { succeeded: boolean }).succeeded === false))
+  assert.doesNotMatch(JSON.stringify(polls), /sensitive-upstream-error/)
   fetch.mock.mockImplementation(
     async () =>
       new Response(JSON.stringify({ status: "success", data: { resultType: "vector", result: [] } })),

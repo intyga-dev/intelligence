@@ -12,7 +12,9 @@ import {
 import type { DetectorId } from "../domain/detectors/index.ts"
 import { detectMetricsHealth, METRICS_MAX_GAP_MS } from "../domain/detectors/metricsHealth.ts"
 import { detectSensitiveChanges, SENSITIVE_PR_KINDS } from "../domain/detectors/sensitiveChange.ts"
-import type { Finding } from "../domain/finding.ts"
+import { runOperationalDetectors } from "./operational.ts"
+import { operationalSettings } from "../domain/detectors/operationalSettings.ts"
+import { findingKind, type Finding } from "../domain/finding.ts"
 import { type PathMap, pathMapFor } from "../domain/sensitivity.ts"
 import { evaluateFindingWithJudgment } from "../domain/judgment.ts"
 import { prisma } from "../store/client.ts"
@@ -68,6 +70,8 @@ async function pollConnectors(): Promise<TickReport["polled"]> {
       config: true,
       secretCiphertext: true,
       serviceId: true,
+      activatedAt: true,
+      lastPolledAt: true,
     },
   })
 
@@ -78,14 +82,31 @@ async function pollConnectors(): Promise<TickReport["polled"]> {
 
     let reportedError = false
     const polledAt = new Date()
+    const stagedCursors = new Map<string, string>()
     try {
+      const policyConfig =
+        c.kind === "github"
+          ? await prisma.detectorConfig.findUnique({
+              where: { tenantId_detector: { tenantId: c.tenantId, detector: "merge-policy" } },
+            })
+          : null
+      const policyTargets = policyConfig?.enabled
+        ? operationalSettings("merge-policy", policyConfig.settings).targets.filter(
+            (t) => t.connectionId === c.id,
+          )
+        : []
       const ctx: ConnectorContext = {
         connectionId: c.id,
         tenantId: c.tenantId,
-        config: (c.config ?? {}) as Record<string, unknown>,
+        config: {
+          ...((c.config ?? {}) as Record<string, unknown>),
+          policyTargets: JSON.stringify(policyTargets),
+        },
         secret: c.secretCiphertext ? decryptSecret(c.secretCiphertext) : null,
-        getCursor: (name) => getCursor(c.id, name),
-        setCursor: (name, value) => setCursor(c.id, name, value),
+        getCursor: (name) => Promise.resolve(stagedCursors.get(name) ?? getCursor(c.id, name)),
+        setCursor: async (name, value) => {
+          stagedCursors.set(name, value)
+        },
         // Poll connectors report recoverable request failures here so other resources can continue.
         // Persist only a safe summary: provider bodies and URLs can include credentials.
         log: () => {
@@ -108,11 +129,35 @@ async function pollConnectors(): Promise<TickReport["polled"]> {
         await saveEvent(c.tenantId, e, c.serviceId)
         stored++
       }
+      if (!reportedError) for (const [name, value] of stagedCursors) await setCursor(c.id, name, value)
       report[c.label] = reportedError ? { error: true } : { fetched: events.length, stored }
     } catch {
       reportedError = true
       report[c.label] = { error: true }
     }
+    await saveEvent(
+      c.tenantId,
+      {
+        connectionId: c.id,
+        source: "intelligence",
+        sourceId: `poll:${polledAt.toISOString()}`,
+        kind: "intelligence.poll",
+        at: polledAt,
+        subjectRef: c.label,
+        correlationRef: null,
+        attrs: {
+          succeeded: !reportedError,
+          gapMinutes:
+            c.lastPolledAt && (!c.activatedAt || c.lastPolledAt >= c.activatedAt)
+              ? Math.max(0, (polledAt.getTime() - c.lastPolledAt.getTime()) / 60_000)
+              : 0,
+        },
+      },
+      c.serviceId,
+    ).catch(() => {
+      reportedError = true
+      report[c.label] = { error: true }
+    })
     await prisma.connection
       .update({
         where: { id: c.id },
@@ -140,7 +185,9 @@ async function persist(tenantId: string, found: Finding[]): Promise<number> {
   for (const f of found) {
     const r = await upsertFinding(f)
     if (r.isNew) created++
-    await evaluateFindingWithJudgment(tenantId, r.id).catch(() => {})
+    if (findingKind(f.dedupeKey) !== "observation") {
+      await evaluateFindingWithJudgment(tenantId, r.id).catch(() => {})
+    }
   }
   return created
 }
@@ -179,6 +226,7 @@ export async function runDetectors(now = new Date()): Promise<TickReport> {
   for (const { id: tenantId } of tenants) {
     const off = await disabledDetectors(tenantId)
     const mapFor = await pathMaps(tenantId)
+    await runOperationalDetectors(tenantId, now, off, run)
 
     // Switched off means NOT WATCHED, not deferred: the event-driven detectors' marks keep moving,
     // so switching one back on does not replay everything that happened while it was off.

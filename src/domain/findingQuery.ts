@@ -5,6 +5,7 @@ export const FINDING_SEVERITIES = ["critical", "high", "medium", "low", "info"] 
 export const FINDING_CATEGORIES = ["security", "engineering", "product", "customer", "business"] as const
 
 export const FINDING_QUERY = z.object({
+  kind: z.enum(["finding", "observation", "all"]).default("finding"),
   service: z.union([z.literal(""), z.uuid()]).default(""),
   status: z
     .string()
@@ -27,6 +28,7 @@ export type FindingQuery = z.infer<typeof FINDING_QUERY>
 
 export function findingOptions(q: FindingQuery) {
   return {
+    kind: q.kind,
     ...(q.service ? { serviceId: q.service } : {}),
     status: q.status === "all" ? [] : q.status === "open" ? ["new", "investigating"] : q.status.split(","),
     ...(q.severity ? { severity: q.severity } : {}),
@@ -49,5 +51,5 @@ export function findingsUrl(q: FindingQuery, changes: Partial<FindingQuery> = {}
 }
 
 export function findingUrl(id: string): string {
-  return `/findings?status=all&q=${encodeURIComponent(id)}#${encodeURIComponent(id)}`
+  return `/findings?kind=all&status=all&q=${encodeURIComponent(id)}#${encodeURIComponent(id)}`
 }

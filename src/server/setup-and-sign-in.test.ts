@@ -197,9 +197,21 @@ test("the OIDC callback creates the verified member and session, and refreshes t
   assert.ok(member.lastLoginAt)
   assert.notEqual((await prisma.session.findFirstOrThrow()).tokenHash, cookie.split("=")[1])
   assert.equal((await app.inject({ url: "/", headers: { cookie } })).statusCode, 200)
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/profile",
+        headers: { cookie, origin: ORIGIN },
+        payload: { name: "My chosen name" },
+      })
+    ).statusCode,
+    200,
+  )
   await signIn("MEMBER")
   member = await prisma.member.findFirstOrThrow()
   assert.equal(member.role, "MEMBER")
+  assert.equal(member.label, "My chosen name", "sign-in preserves the chosen display name")
   assert.equal(await prisma.member.count(), 1)
   assert.equal((await open(cookie)).statusCode, 400, "old session resolves the refreshed member role")
 })
@@ -229,6 +241,59 @@ test("MEMBER cannot open actions or test the service key", { skip }, async () =>
   assert.equal((await form("/settings/test", {}, cookie)).statusCode, 403)
   assert.equal(await prisma.pendingAction.count(), 0)
   assert.equal(gateway.state.authorizeCalls.length, 0)
+})
+
+test("GitHub configuration waits for a verified approval and preserves credentials and cursors", {
+  skip,
+}, async () => {
+  const t = await connect()
+  const cookie = await signIn()
+  const c = await prisma.connection.create({
+    data: {
+      tenantId: t.id,
+      kind: "github",
+      label: "GitHub",
+      active: true,
+      config: { repos: "acme/core, acme/deploy", custom: "preserved" },
+      secretCiphertext: "encrypted-test-token",
+    },
+  })
+  await prisma.sourceCursor.create({
+    data: { connectionId: c.id, name: "pr:acme/core", value: "2026-11-07T00:00:00Z" },
+  })
+  const params = {
+    connectionId: c.id,
+    label: "GitHub core",
+    repos: "acme/core",
+    deployWorkflows: "Deploy",
+    pathMap: "generic",
+  }
+  const opened = await app.inject({
+    method: "POST",
+    url: "/api/actions/open",
+    headers: { cookie },
+    payload: { action: "intelligence.connector.configure-github", params },
+  })
+  assert.equal(opened.statusCode, 200, opened.body)
+  assert.equal((await poll(cookie)).json().status, "pending")
+  assert.deepEqual((await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).config, c.config)
+  const frozen = gateway.state.authorizeCalls[0]
+  assert.ok(frozen)
+  assert.deepEqual(frozen.params, params)
+  gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+  gateway.state.status = "APPROVED"
+  assert.equal((await poll(cookie)).json().status, "applied")
+  const updated = await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })
+  assert.deepEqual(updated.config, {
+    repos: "acme/core",
+    deployWorkflows: "Deploy",
+    pathMap: "generic",
+    custom: "preserved",
+  })
+  assert.equal(updated.secretCiphertext, c.secretCiphertext)
+  assert.equal(updated.active, true)
+  assert.equal(await prisma.sourceCursor.count({ where: { connectionId: c.id } }), 1)
+  assert.equal(gateway.state.consumeCalls.length, 1)
 })
 
 test("polling waits for approval, verifies frozen parameters, redeems once and executes once", {

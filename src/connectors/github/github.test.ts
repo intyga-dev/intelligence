@@ -227,3 +227,28 @@ test("the connector declares a read-only token requirement in its own setup text
   assert.match(tokenField.help ?? "", /read-only/i)
   assert.ok(githubConnector.setup.some((s) => /read-only/i.test(s)))
 })
+
+test("a successful retry below the update cursor is collected with its own attempt identity", async (t) => {
+  t.after(() => mock.restoreAll())
+  const run = {
+    id: 50,
+    name: "CI",
+    head_sha: "abc",
+    head_branch: "main",
+    run_attempt: 2,
+    status: "completed",
+    conclusion: "success",
+    created_at: iso(3600000),
+    updated_at: iso(60000),
+    event: "push",
+    html_url: "https://github.com/a/b/actions/runs/50",
+  }
+  stubGitHub({ "/repos/a/b/pulls": [], "/repos/a/b/actions/runs": { workflow_runs: [run] } })
+  const cursors = new Map([["run:a/b", iso(30000)]])
+  const events = await githubConnector.poll(ctx({ repos: "a/b" }, cursors))
+  assert.equal(events.length, 1)
+  assert.equal(events[0]!.sourceId, "run:a/b#50:attempt:2")
+  assert.equal(events[0]!.attrs.branch, "main")
+  assert.equal(events[0]!.attrs.runId, "50")
+  assert.equal(events[0]!.attrs.conclusion, "success")
+})

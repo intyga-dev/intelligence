@@ -1,11 +1,68 @@
 import { z } from "zod"
-import { GateNotConfigured, GateRefused, GateUnavailable } from "./client.ts"
+import type { GateConfig } from "./client.ts"
+import { GateNotConfigured, GateRefused, GateUnavailable } from "./errors.ts"
 import type { DeploymentConnection } from "./deployment.ts"
 import { gatewayTransportUrl } from "./transport.ts"
 
+// Only recognized protocol reasons become user-facing text. Never relay an arbitrary gateway
+// response: proxy errors and upstream exception messages may contain request data or credentials.
+const approvalRefusals = new Map([
+  [
+    "unknown embedded credential",
+    "This passkey is not active for Intelligence. Choose the application passkey you created here, or link your INTYGA membership again from the sign-in page.",
+  ],
+  ["embedded passkey required", "Choose your Intelligence application passkey to approve this action."],
+  [
+    "invalid webauthn assertion",
+    "INTYGA could not verify this passkey response. Retry from Intelligence's registered address with your application passkey.",
+  ],
+  [
+    "signer is not an eligible approver",
+    "Your membership is not eligible to approve this action under the workspace approval rules.",
+  ],
+  [
+    "four-eyes: a different approver is required",
+    "The workspace approval rules require a different person to approve this action. Share the approval link with another eligible approver.",
+  ],
+  [
+    "requester controller cannot approve",
+    "The workspace approval rules require another eligible approver. Share the approval link with them.",
+  ],
+  [
+    "authenticator does not meet the hardware policy for this action",
+    "This passkey does not meet the workspace's hardware requirements for this action.",
+  ],
+  ["credential revoked", "This passkey has been revoked. Use an active Intelligence application passkey."],
+  [
+    "embedded credential is no longer eligible",
+    "This application passkey is no longer eligible. Check your workspace membership and application registration.",
+  ],
+  [
+    "credential changed during verification; sign again",
+    "The passkey changed during verification. Try approving again.",
+  ],
+  ["expired", "This approval has expired. Close this dialog and request the action again."],
+  [
+    "approval belongs to another application",
+    "This approval belongs to another application. Check Intelligence's application registration.",
+  ],
+])
+
+async function embeddedRefusal(res: Response): Promise<GateRefused> {
+  if (res.status === 403) {
+    const body = await res.json().catch(() => null)
+    const parsed = z.object({ error: z.string() }).safeParse(body)
+    const message = parsed.success ? approvalRefusals.get(parsed.data.error) : undefined
+    if (message) return new GateRefused(message)
+  }
+  return new GateRefused(
+    `INTYGA refused the embedded ceremony (HTTP ${res.status}). Check the application registration, membership and passkey.`,
+  )
+}
+
 /** Application backend relay. Service credentials and access tokens never reach the browser. */
 export async function embeddedRequest(
-  cfg: DeploymentConnection,
+  cfg: Pick<GateConfig, "baseUrl" | "serviceClientId" | "serviceSecret" | "embeddedApplicationId">,
   path: string,
   body: unknown,
 ): Promise<unknown> {
@@ -32,10 +89,11 @@ export async function embeddedRequest(
         signal: AbortSignal.timeout(15_000),
       },
     )
-    if (!res.ok)
+    if (path === "authorize" && res.status === 404)
       throw new GateRefused(
-        "INTYGA refused the embedded ceremony. Check the application registration, membership and passkey.",
+        "INTYGA needs the application-approval routing update. Update the gateway and retry.",
       )
+    if (!res.ok) throw await embeddedRefusal(res)
     return await res.json()
   } catch (err) {
     if (err instanceof GateRefused) throw err

@@ -8,7 +8,7 @@ that turns out to conflict with a design decision that was never written down.
 
 **1. The trust boundary is not negotiable.**
 
-> Intelligence may ask Intyga for permission. It may never hold the power to grant it, bypass it, or
+> Intelligence may ask INTYGA for permission. It may never hold the power to grant it, bypass it, or
 > read across it.
 
 `pnpm check:boundary` enforces the shape of this, and it is a text scan — it stops the ordinary
@@ -24,11 +24,19 @@ finding is a change to what this product is.
 
 ## Before you open a pull request
 
+Agents must ask before switching branches, keep commits local, and leave pushes, GitHub Actions
+dispatches/reruns and PR-ready transitions to the maintainer. Local checks do not require another
+approval. Repository skills are available for [operations](.agents/skills/intelligence-operate/SKILL.md),
+[integrations](.agents/skills/intelligence-integrations/SKILL.md) and
+[release preparation](.agents/skills/intelligence-release/SKILL.md).
+
 ```bash
 pnpm verify   # typecheck, lint, boundary check, unit tests — all four must pass
 ```
 
-CI runs exactly this. There is no separate set of checks to discover after review.
+CI generates the Prisma client, deploys migrations to a disposable test database, runs `pnpm verify`,
+and separately runs `pnpm audit --prod --audit-level high`. Database-backed tests must run in CI.
+Release changes also follow [docs/RELEASING.md](docs/RELEASING.md).
 
 ## What a good change looks like here
 
@@ -42,10 +50,8 @@ decision like that, say so in the comment. If it adds one, write down what you t
 database and no Fastify instance — `src/domain/`, `src/gate/` and `src/redaction/` are all testable
 as pure functions, and that is not an accident. Inject a clock rather than sleeping.
 
-The exceptions are `src/server/setup-and-sign-in.test.ts`, which drives first-time setup, the
-INTYGA sign-in hand-off and the action API through the real routes — the paths where nobody is
-signed in yet — and `src/alerts/delivery.test.ts`, which delivers alerts to a real local HTTP
-receiver. They need `TEST_DATABASE_URL` pointing at a database whose name contains `test` (they truncate every
+Database-backed suites cover setup/sign-in, provider connectors, finding queries, polling,
+operational detection and alert delivery through real routes and local HTTP receivers. They need `TEST_DATABASE_URL` pointing at a database whose name contains `test` (they truncate every
 table), and skip without it. Test files run one at a time for that reason. CI always sets it. To run it locally:
 
 ```bash

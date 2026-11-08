@@ -74,6 +74,17 @@ beforeEach(async () => {
 const T0 = new Date("2026-09-23T10:00:00Z")
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000)
 
+test("path-only observations cannot alert, even with a legacy high severity", { skip }, async () => {
+  const { tenant } = await seed({ active: true })
+  await finding(tenant.id, "sensitive:connection:repo#1", "high", at(1))
+  await deliverAlerts(at(2))
+  assert.equal(received.length, 0)
+  await finding(tenant.id, "regression:connection:deploy", "high", at(3))
+  await deliverAlerts(at(4))
+  assert.equal(received.length, 1)
+  assert.doesNotMatch(received[0]!.body, /sensitive:/)
+})
+
 async function seed(opts: { active: boolean; minSeverity?: "high" | "low" }) {
   const tenant = await prisma.tenant.create({
     data: { slug: "t", name: "t" },

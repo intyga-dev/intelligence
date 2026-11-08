@@ -1,0 +1,116 @@
+.findingFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+.findingFilters .field {
+  flex: 1 1 130px;
+  margin: 0;
+}
+.findingFilters .field.search {
+  flex: 2 1 240px;
+}
+.findingPagination {
+  margin: 16px 0;
+  position: static;
+  width: auto;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.finding {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin: 0 0 12px;
+  scroll-margin-top: 20px;
+  overflow-wrap: anywhere;
+}
+.finding.critical {
+  border-left-color: var(--red);
+}
+.finding.high {
+  border-left-color: var(--amber);
+}
+.finding.medium {
+  border-left-color: var(--brand);
+}
+.finding:target {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.finding header {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.finding h2 {
+  font-size: 16px;
+  margin: 0 0 6px;
+}
+.finding .sum {
+  color: var(--muted);
+  font-size: 13px;
+}
+.finding .evidence {
+  list-style: none;
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--panel-2);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  font-size: 12.5px;
+}
+.finding .k {
+  display: inline-block;
+  min-width: 80px;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.finding .model,
+.finding .model .k {
+  color: var(--brand);
+}
+.finding footer {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 12px;
+}
+.finding footer button {
+  font-size: 11px;
+  padding: 5px 9px;
+}
+.finding details {
+  margin-top: 8px;
+}
+.finding summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.finding textarea {
+  margin-top: 6px;
+}
+.finding .note {
+  white-space: pre-wrap;
+  margin: 5px 0 10px;
+}
+.finding .feedbackError {
+  color: var(--red);
+  font-size: 12px;
+}
+.finding .feedbackError:empty {
+  display: none;
+}
