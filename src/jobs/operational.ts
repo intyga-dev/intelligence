@@ -40,7 +40,7 @@ async function persistFresh(found: Finding[]) {
 
 export async function runOperationalDetectors(tenantId: string, now: Date, off: Set<string>, run: Runner) {
   const sources = await prisma.connection.findMany({
-    where: { tenantId, active: true },
+    where: { tenantId, removedAt: null, active: true },
     select: {
       id: true,
       label: true,

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { createHash } from "node:crypto"
 import { newSigningSecret, parseTarget } from "../alerts/deliver.ts"
 import { DETECTORS } from "../domain/detectors/index.ts"
 import { CONFIGURE_DETECTOR } from "../domain/detectors/operationalSettings.ts"
@@ -13,6 +14,7 @@ export type GatedAction =
   | "intelligence.connector.configure-github"
   | "intelligence.connector.activate"
   | "intelligence.connector.deactivate"
+  | "intelligence.connector.remove"
   | "intelligence.judgment.enable"
   | "intelligence.judgment.disable"
   | "intelligence.data.purge"
@@ -33,13 +35,18 @@ export type GatedAction =
 // `summary` is what a human reads before they tap their key. It must describe the effect in plain
 // words: an approver deciding on the strength of an opaque action name is not really approving.
 
+interface ActionReceipt {
+  nonce: string
+  secretCiphertext?: string | null
+}
+
 export interface ActionDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   schema: S
   /** Shown to the approver. Written in the imperative — "Turn on …", not "toggles the …". */
   summary: (params: z.infer<S>) => string
   /** Runs only after the signature is redeemed, with the exact params that were signed. */
   // biome-ignore lint/suspicious/noConfusingVoidType: `void` is what lets most actions return nothing; `undefined` would make every one of them write `return undefined`.
-  run: (tenantId: string, params: z.infer<S>, receipt: { nonce: string }) => Promise<void | ActionOutcome>
+  run: (tenantId: string, params: z.infer<S>, receipt: ActionReceipt) => Promise<void | ActionOutcome>
   /** Consequence class, used to style the confirmation. */
   impact: "low" | "medium" | "high"
 }
@@ -86,21 +93,33 @@ export const ACTIONS = {
           }, "Use 1–20 repositories in owner/name format"),
         deployWorkflows: z.string().trim().max(2000),
         pathMap: z.enum(["generic", "intyga-core"]),
+        tokenDigest: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
       })
       .strict(),
     summary: (p) =>
-      `Configure GitHub source ${p.connectionId} (${p.label}): repositories ${p.repos}; deploy workflows ${p.deployWorkflows || "none"}; sensitive-path map ${p.pathMap}. Keep its existing token and history.`,
-    run: async (tenantId, p) => {
+      `Configure GitHub source ${p.connectionId} (${p.label}): repositories ${p.repos}; deploy workflows ${p.deployWorkflows || "none"}; sensitive-path map ${p.pathMap}. ${p.tokenDigest ? "Replace its GitHub token." : "Keep its existing token."} Keep collected history.`,
+    run: async (tenantId, p, receipt) => {
+      if (
+        p.tokenDigest &&
+        (!receipt.secretCiphertext ||
+          createHash("sha256").update(receipt.secretCiphertext).digest("hex") !== p.tokenDigest ||
+          !decryptSecret(receipt.secretCiphertext))
+      )
+        throw new Error("The approved replacement token is unavailable or has changed")
       await prisma.$transaction(async (tx) => {
         const connection = await tx.connection.findFirst({
-          where: { id: p.connectionId, tenantId, kind: "github", builtIn: false },
+          where: { id: p.connectionId, tenantId, kind: "github", builtIn: false, removedAt: null },
           select: { config: true },
         })
         if (!connection) throw new Error("GitHub connector not found in this tenant")
-        await tx.connection.updateMany({
-          where: { id: p.connectionId, tenantId, kind: "github", builtIn: false },
+        const updated = await tx.connection.updateMany({
+          where: { id: p.connectionId, tenantId, kind: "github", builtIn: false, removedAt: null },
           data: {
             label: p.label,
+            ...(p.tokenDigest ? { secretCiphertext: receipt.secretCiphertext } : {}),
             config: {
               ...(connection.config as Record<string, string>),
               repos: p.repos,
@@ -109,7 +128,26 @@ export const ACTIONS = {
             },
           },
         })
+        if (updated.count !== 1) throw new Error("GitHub connector not found in this tenant")
       })
+    },
+  }),
+  "intelligence.connector.remove": defineAction({
+    impact: "high",
+    schema: connectorParams.strict(),
+    summary: (p) =>
+      `Remove connector ${p.connectionId}. Stop collection, erase its saved credential and remove it from the connector list. Keep historical events and findings. Any collection already in progress may finish.`,
+    run: async (tenantId, p, receipt) => {
+      const result = await prisma.connection.updateMany({
+        where: { id: p.connectionId, tenantId, builtIn: false, removedAt: null },
+        data: {
+          removedAt: new Date(),
+          active: false,
+          secretCiphertext: null,
+          activationReceipt: receipt.nonce,
+        },
+      })
+      if (result.count !== 1) throw new Error("Removable connector not found in this tenant")
     },
   }),
   "intelligence.detector.configure": defineAction({
@@ -121,7 +159,7 @@ export const ACTIONS = {
       if ("targets" in p.settings) {
         const ids = [...new Set(p.settings.targets.map((t) => t.connectionId))]
         const sources = await prisma.connection.findMany({
-          where: { tenantId, id: { in: ids } },
+          where: { tenantId, id: { in: ids }, removedAt: null },
           select: { id: true, kind: true, config: true },
         })
         if (sources.length !== ids.length)
@@ -176,7 +214,7 @@ export const ACTIONS = {
           throw new Error("service not found in this tenant")
         }
         const updated = await tx.connection.updateMany({
-          where: { id: p.connectionId, tenantId },
+          where: { id: p.connectionId, tenantId, removedAt: null },
           data: { serviceId: p.serviceId },
         })
         if (updated.count !== 1) throw new Error("connector not found in this tenant")
@@ -213,7 +251,7 @@ export const ACTIONS = {
       // Scoped by tenantId: a connectionId from another tenant must not be reachable even with a
       // valid signature from this one.
       const res = await prisma.connection.updateMany({
-        where: { id: p.connectionId, tenantId },
+        where: { id: p.connectionId, tenantId, removedAt: null },
         data: { active: true, activatedAt: new Date(), activationReceipt: receipt.nonce },
       })
       if (res.count !== 1) throw new Error("connector not found in this tenant")
@@ -227,7 +265,7 @@ export const ACTIONS = {
       "Turn OFF a data connector. Existing findings are kept; no new events will be ingested from it.",
     run: async (tenantId, p: { connectionId: string }, receipt) => {
       const res = await prisma.connection.updateMany({
-        where: { id: p.connectionId, tenantId },
+        where: { id: p.connectionId, tenantId, removedAt: null },
         data: { active: false, activationReceipt: receipt.nonce },
       })
       if (res.count !== 1) throw new Error("connector not found in this tenant")

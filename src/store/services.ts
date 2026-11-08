@@ -5,7 +5,7 @@ export async function listServices(tenantId: string) {
   const rows = await prisma.service.findMany({
     where: { tenantId },
     orderBy: { name: "asc" },
-    include: { connections: { select: { id: true, label: true, active: true } } },
+    include: { connections: { where: { removedAt: null }, select: { id: true, label: true, active: true } } },
   })
   return Promise.all(
     rows.map(async (service) => {
@@ -25,7 +25,12 @@ export async function listServices(tenantId: string) {
 export async function serviceDetail(tenantId: string, id: string, now = new Date()) {
   const service = await prisma.service.findFirst({
     where: { tenantId, id },
-    include: { connections: { select: { id: true, label: true, kind: true, active: true } } },
+    include: {
+      connections: {
+        where: { removedAt: null },
+        select: { id: true, label: true, kind: true, active: true },
+      },
+    },
   })
   if (!service) return null
   const since = new Date(now.getTime() - 7 * 86400_000)

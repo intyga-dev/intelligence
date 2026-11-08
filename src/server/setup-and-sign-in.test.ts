@@ -296,6 +296,251 @@ test("GitHub configuration waits for a verified approval and preserves credentia
   assert.equal(gateway.state.consumeCalls.length, 1)
 })
 
+test("GitHub token replacement is encrypted, receipt-bound and applied once without losing history", {
+  skip,
+}, async () => {
+  const t = await connect()
+  const cookie = await signIn()
+  const { encryptSecret, decryptSecret } = await import("../store/crypto.ts")
+  const c = await prisma.connection.create({
+    data: {
+      tenantId: t.id,
+      kind: "github",
+      label: "GitHub",
+      active: true,
+      secretCiphertext: encryptSecret("old-token"),
+      config: { repos: "acme/core", custom: "preserved" },
+    },
+  })
+  await prisma.sourceCursor.create({ data: { connectionId: c.id, name: "pr:acme/core", value: "unchanged" } })
+  const params = {
+    connectionId: c.id,
+    label: c.label,
+    repos: "acme/core",
+    deployWorkflows: "",
+    pathMap: "generic",
+  }
+  const replacementToken = "github_pat_replacement-test-only"
+  const opened = await app.inject({
+    method: "POST",
+    url: "/api/actions/open",
+    headers: { cookie },
+    payload: { action: "intelligence.connector.configure-github", params, replacementToken },
+  })
+  assert.equal(opened.statusCode, 200, opened.body)
+  assert.match(opened.json().summary, /Replace its GitHub token/)
+  const pending = await prisma.pendingAction.findUniqueOrThrow({ where: { nonce: gateway.state.nonce } })
+  assert.ok(pending.secretCiphertext)
+  assert.equal(decryptSecret(pending.secretCiphertext), replacementToken)
+  assert.doesNotMatch(JSON.stringify(pending), new RegExp(replacementToken))
+  const frozen = gateway.state.authorizeCalls[0]
+  assert.ok(frozen)
+  assert.match(String(frozen.params.tokenDigest), /^[a-f0-9]{64}$/)
+  assert.equal(JSON.stringify(frozen).includes(pending.secretCiphertext), false)
+  assert.equal(JSON.stringify(frozen).includes(replacementToken), false)
+  assert.equal(opened.body.includes(replacementToken), false)
+  assert.equal((await poll(cookie)).json().status, "pending")
+  assert.equal(
+    (await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).secretCiphertext,
+    c.secretCiphertext,
+  )
+  gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+  gateway.state.status = "APPROVED"
+  assert.equal((await poll(cookie)).json().status, "applied")
+  const updated = await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })
+  assert.equal(decryptSecret(updated.secretCiphertext!), replacementToken)
+  assert.equal(updated.active, true)
+  assert.equal((updated.config as Record<string, unknown>).custom, "preserved")
+  assert.equal(await prisma.sourceCursor.count({ where: { connectionId: c.id } }), 1)
+  assert.equal(
+    (await prisma.pendingAction.findUniqueOrThrow({ where: { nonce: pending.nonce } })).secretCiphertext,
+    null,
+  )
+  assert.equal((await poll(cookie)).json().status, "applied")
+  assert.equal(gateway.state.consumeCalls.length, 1)
+})
+
+for (const outcome of ["denied", "expired", "tampered-secret", "tampered-params", "blank"] as const) {
+  test(`GitHub token replacement handles ${outcome} without changing the existing credential`, {
+    skip,
+  }, async () => {
+    const t = await connect()
+    const cookie = await signIn()
+    const { encryptSecret } = await import("../store/crypto.ts")
+    const c = await prisma.connection.create({
+      data: {
+        tenantId: t.id,
+        kind: "github",
+        label: "GitHub",
+        secretCiphertext: encryptSecret("keep-me"),
+      },
+    })
+    const params = {
+      connectionId: c.id,
+      label: c.label,
+      repos: "acme/core",
+      deployWorkflows: "",
+      pathMap: "generic",
+    }
+    const opened = await app.inject({
+      method: "POST",
+      url: "/api/actions/open",
+      headers: { cookie },
+      payload: {
+        action: "intelligence.connector.configure-github",
+        params,
+        replacementToken: outcome === "blank" ? "   " : "replacement-token",
+      },
+    })
+    assert.equal(opened.statusCode, 200, opened.body)
+    const frozen = gateway.state.authorizeCalls[0]
+    assert.ok(frozen)
+    gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+    gateway.state.status = outcome === "denied" ? "DENIED" : "APPROVED"
+    if (outcome === "expired")
+      await prisma.pendingAction.update({
+        where: { nonce: gateway.state.nonce },
+        data: { expiresAt: new Date(0) },
+      })
+    if (outcome === "tampered-secret")
+      await prisma.pendingAction.update({
+        where: { nonce: gateway.state.nonce },
+        data: { secretCiphertext: encryptSecret("different-token") },
+      })
+    if (outcome === "tampered-params")
+      await prisma.pendingAction.update({
+        where: { nonce: gateway.state.nonce },
+        data: { params: { ...frozen.params, tokenDigest: "0".repeat(64) } },
+      })
+    assert.equal((await poll(cookie)).json().status, outcome === "blank" ? "applied" : "refused")
+    assert.equal(
+      (await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).secretCiphertext,
+      c.secretCiphertext,
+    )
+    assert.equal(
+      (await prisma.pendingAction.findUniqueOrThrow({ where: { nonce: gateway.state.nonce } }))
+        .secretCiphertext,
+      null,
+    )
+    if (outcome === "blank") assert.deepEqual(frozen.params, params)
+  })
+}
+
+test("connector removal waits for approval, clears credentials and keeps evidence", { skip }, async () => {
+  const t = await connect()
+  const cookie = await signIn()
+  const c = await prisma.connection.create({
+    data: {
+      tenantId: t.id,
+      kind: "github",
+      label: "Remove this source",
+      active: true,
+      secretCiphertext: "saved-token",
+    },
+  })
+  const event = await prisma.event.create({
+    data: {
+      tenantId: t.id,
+      connectionId: c.id,
+      source: "github",
+      sourceId: "historical",
+      kind: "ci.run",
+      at: new Date(),
+    },
+  })
+  const before = await app.inject({ url: "/connectors", headers: { cookie } })
+  assert.match(before.body, /Remove connector/)
+  const opened = await app.inject({
+    method: "POST",
+    url: "/api/actions/open",
+    headers: { cookie },
+    payload: { action: "intelligence.connector.remove", params: { connectionId: c.id } },
+  })
+  assert.equal(opened.statusCode, 200, opened.body)
+  assert.equal((await poll(cookie)).json().status, "pending")
+  assert.equal((await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).active, true)
+  const frozen = gateway.state.authorizeCalls[0]
+  assert.ok(frozen)
+  gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+  gateway.state.status = "APPROVED"
+  assert.equal((await poll(cookie)).json().status, "applied")
+  const removed = await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })
+  assert.ok(removed.removedAt)
+  assert.equal(removed.active, false)
+  assert.equal(removed.secretCiphertext, null)
+  assert.ok(await prisma.event.findUnique({ where: { id: event.id } }))
+  assert.doesNotMatch(
+    (await app.inject({ url: "/connectors", headers: { cookie } })).body,
+    /Remove this source/,
+  )
+  assert.equal((await app.inject({ url: `/connectors/${c.id}/edit`, headers: { cookie } })).statusCode, 404)
+  const { connectionForIngest, activeConnections } = await import("../store/repo.ts")
+  assert.equal(await connectionForIngest(c.id, "github"), null)
+  assert.equal(
+    (await activeConnections()).some((row) => row.id === c.id),
+    false,
+  )
+  const { ACTIONS } = await import("../actions/registry.ts")
+  await assert.rejects(
+    ACTIONS["intelligence.connector.activate"].run(t.id, { connectionId: c.id }, { nonce: "stale" }),
+    /not found/,
+  )
+  await assert.rejects(
+    ACTIONS["intelligence.connector.configure-github"].run(
+      t.id,
+      {
+        connectionId: c.id,
+        label: "Restored",
+        repos: "acme/core",
+        deployWorkflows: "",
+        pathMap: "generic",
+      },
+      { nonce: "stale" },
+    ),
+    /not found/,
+  )
+})
+
+test("connector removal cannot reach built-in or foreign sources and members cannot request it", {
+  skip,
+}, async () => {
+  const t = await connect()
+  const cookie = await signIn()
+  const foreign = await prisma.tenant.create({ data: { slug: "foreign-removal", name: "Foreign" } })
+  const ownBuiltin = await prisma.connection.findFirstOrThrow({ where: { tenantId: t.id, builtIn: true } })
+  const other = await prisma.connection.create({
+    data: { tenantId: foreign.id, kind: "github", label: "Foreign" },
+  })
+  for (const c of [ownBuiltin, other]) {
+    gateway.reset()
+    const opened = await app.inject({
+      method: "POST",
+      url: "/api/actions/open",
+      headers: { cookie },
+      payload: { action: "intelligence.connector.remove", params: { connectionId: c.id } },
+    })
+    assert.equal(opened.statusCode, 200, opened.body)
+    const frozen = gateway.state.authorizeCalls[0]
+    assert.ok(frozen)
+    gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+    gateway.state.status = "APPROVED"
+    assert.equal((await poll(cookie)).json().status, "refused")
+    assert.equal((await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).removedAt, null)
+  }
+  await prisma.member.updateMany({ where: { tenantId: t.id }, data: { role: "MEMBER" } })
+  const denied = await app.inject({
+    method: "POST",
+    url: "/api/actions/open",
+    headers: { cookie },
+    payload: { action: "intelligence.connector.remove", params: { connectionId: ownBuiltin.id } },
+  })
+  assert.equal(denied.statusCode, 400)
+  assert.doesNotMatch(
+    (await app.inject({ url: "/connectors", headers: { cookie } })).body,
+    /Remove connector/,
+  )
+})
+
 test("polling waits for approval, verifies frozen parameters, redeems once and executes once", {
   skip,
 }, async () => {

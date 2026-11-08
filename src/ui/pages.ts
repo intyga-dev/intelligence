@@ -250,7 +250,7 @@ export function connectorsPage(o: {
   available: AvailableConnector[]
   counts: { findings: number; alerts: number; connectors: number }
   /** Who is signed in — rendered in the sidebar with the sign-out link. */
-  actor?: { label: string; externalId: string }
+  actor?: { label: string; externalId: string; role?: string }
 }): string {
   const addable = o.available
   const needsAttention = o.rows.filter((c) => connectorHealth(c).tone === "high").length
@@ -304,6 +304,7 @@ ${o.rows
     }</span>
   </div>
   ${c.kind === "github" ? `<p><a class="btn" href="/connectors/${esc(c.id)}/edit">Edit configuration</a></p>` : ""}
+  ${!c.builtIn && o.actor?.role === "ADMIN" ? `<p>${actionBtn({ label: "Remove connector", action: "intelligence.connector.remove", params: { connectionId: c.id }, cls: "ghost" })}</p>` : ""}
   <div style="margin-bottom:12px"><span class="badge ${health.tone}">${esc(health.label)}</span>
     <p class="mut" style="margin:6px 0 0;font-size:12.5px">${esc(health.detail)}</p></div>
   <table><tbody>

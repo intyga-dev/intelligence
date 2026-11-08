@@ -154,6 +154,9 @@ test("GitHub editing is tenant scoped, admin only and never exposes the stored t
   assert.equal(edit.statusCode, 200)
   assert.match(edit.body, /acme\/core, acme\/deploy/)
   assert.doesNotMatch(edit.body, /never-render-this/)
+  assert.match(edit.body, /Replacement GitHub token/)
+  assert.match(edit.body, /type="password" autocomplete="new-password"/)
+  assert.match(edit.body, /Leave empty to keep the saved token/)
   assert.match((await get("/connectors")).body, /Edit configuration/)
   const other = await prisma.tenant.create({ data: { slug: "foreign-edit", name: "Foreign" } })
   const foreign = await prisma.connection.create({

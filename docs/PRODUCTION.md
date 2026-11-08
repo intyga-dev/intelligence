@@ -116,6 +116,20 @@ Intelligence database.
 **Done when:** an ADMIN signs in with an application passkey, **Settings → Test connection**
 succeeds, and a protected change is approved in place and applied. MEMBERs can read Intelligence.
 
+### Avoid repeated image deployments during setup
+
+Prepare DNS, TLS, the SERVICE credentials and the Member application ID before starting the app.
+Generate the short-lived proof when the hostname is ready to serve it. Deploy the image with those
+settings and the proof, verify ownership, then link the first application passkey and install the
+exported application anchor. The anchor comes last because it includes that new passkey.
+
+The app reads both files when needed. If your runtime mounts an operator-managed directory, updating
+its proof or anchor file requires no app restart. If files are materialized only at container startup,
+update the deployment configuration and restart using the **same image**. Environment changes also
+require recreating or updating the container. Neither step requires rebuilding the application or
+rerunning migrations. Keep trust-anchor installation under operator control; a browser setup flow
+must not be able to replace the keys trusted to approve actions.
+
 ## 7. Schedule the tick
 
 Detection, polling and alert delivery run on `POST /internal/tick`. An external scheduler keeps

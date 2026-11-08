@@ -29,7 +29,10 @@ export const APPROVAL_JS = `
   if(!dlg.open)dlg.showModal();state('preparing','Preparing request','Opening a secure INTYGA approval…',0);toast('Preparing approval…','pending');
   try{
    params=JSON.parse(button.dataset.params||'{}');
-   const res=await fetch('/api/actions/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:button.dataset.action,params})});opened=await res.json();
+   const tokenInput=button.dataset.secretInput?document.getElementById(button.dataset.secretInput):null;
+   const requestBody=JSON.stringify({action:button.dataset.action,params,...(tokenInput?{replacementToken:tokenInput.value}:{})});
+   if(tokenInput)tokenInput.value='';
+   const res=await fetch('/api/actions/open',{method:'POST',headers:{'content-type':'application/json'},body:requestBody});opened=await res.json();
    if(!res.ok)throw new Error(opened.error||'Could not open approval.');
    if(current!==generation||!dlg.open)return;
   }catch(err){if(current!==generation)return;state('error','Could not start approval','The change has not been applied.',0);error.textContent=err.message||'Please try again.';toast(error.textContent,'error');return}

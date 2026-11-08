@@ -50,18 +50,24 @@ file. The browser shows status; it cannot replace the service key, workspace or 
 3. In **Integrations → Member applications**, register Intelligence’s exact origin and service
    client ID. Save the ownership proof to `config/intyga-embedded-registration.json`. Set
    `INTYGA_EMBEDDED_REGISTRATION_FILE` to that file and `INTYGA_EMBEDDED_APPLICATION_ID` to the
-   returned UUID. Restart the app, then **Verify ownership** in INTYGA within 15 minutes.
+   returned UUID. If the app is already running, apply the changed environment with
+   `docker compose --env-file .env.selfhost -f compose.selfhost.yml up -d --no-deps app`, then
+   **Verify ownership** in INTYGA within 15 minutes. This reuses the built image.
 4. From Intelligence’s sign-in page, choose **Link my INTYGA membership**. Authorize linking with
    your console passkey, return to Intelligence, and create an application passkey. Each member
    links their own membership; the service key cannot enroll people on its own.
 5. Export the **application** trust anchor from Member applications, save it as
-   `config/intyga-trust-anchor.json`, and restart the app. Its `tenantId` must match the workspace.
-   Refresh this file when application passkeys change.
+   `config/intyga-trust-anchor.json`. Its `tenantId` must match the workspace. The Compose directory
+   mount makes the file available immediately; no restart or rebuild is needed. Refresh this file
+   when application passkeys change.
 6. Sign in with the application passkey and approve a protected change in Intelligence. Workspace
    ADMINs administer; MEMBERs read. Each action requires its own verified, redeemed approval.
 
 The initial status page can run before a usable trust anchor has been mounted; the well-known
 ownership proof remains available. Members can link before an anchor is mounted; sign-in and execution require a valid anchor.
+To avoid an extra app recreation, fill in the SERVICE credentials and application ID before the
+first start. Have DNS and HTTPS ready before generating the short-lived ownership proof. Later
+proof and anchor file updates are read when needed from the mounted `config/` directory.
 `INTYGA_OIDC_CLIENT_ID` is optional: an OIDC client uses the exact `/auth/callback` URI. Without
 embedded configuration, the normal approval sign-in flow opens INTYGA and grants its initiating
 browser administrator access for 12 hours. Keep the corresponding console-origin trust anchor

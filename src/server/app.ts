@@ -384,9 +384,9 @@ export function buildApp(): FastifyInstance {
    * explicit `undefined` is not the same as an absent property, and only absence is what "nobody is
    * signed in" means here.
    */
-  const withActor = (req: unknown): { actor?: { label: string; externalId: string } } => {
+  const withActor = (req: unknown): { actor?: { label: string; externalId: string; role: string } } => {
     const a = actorOf(req)
-    return a ? { actor: { label: a.label, externalId: a.externalId } } : {}
+    return a ? { actor: { label: a.label, externalId: a.externalId, role: a.role } } : {}
   }
 
   const onboarding = (): string => {
@@ -754,7 +754,7 @@ export function buildApp(): FastifyInstance {
     const [services, connections, c] = await Promise.all([
       listServices(t.id),
       prisma.connection.findMany({
-        where: { tenantId: t.id },
+        where: { tenantId: t.id, removedAt: null },
         orderBy: { label: "asc" },
         select: { id: true, label: true, kind: true, serviceId: true },
       }),
@@ -881,7 +881,13 @@ export function buildApp(): FastifyInstance {
     const parsed = z.object({ id: z.uuid() }).safeParse(req.params)
     if (!parsed.success) return reply.code(404).send({ error: "connector not found" })
     const connection = await prisma.connection.findFirst({
-      where: { id: parsed.data.id, tenantId: actor.tenantId, kind: "github" },
+      where: {
+        id: parsed.data.id,
+        tenantId: actor.tenantId,
+        kind: "github",
+        builtIn: false,
+        removedAt: null,
+      },
       select: { id: true, label: true, config: true },
     })
     if (!connection) return reply.code(404).send({ error: "connector not found" })
@@ -895,7 +901,7 @@ export function buildApp(): FastifyInstance {
     const t = await tenant()
     if (!t) return html(reply, onboarding())
     const conns = await prisma.connection.findMany({
-      where: { tenantId: t.id },
+      where: { tenantId: t.id, removedAt: null },
       orderBy: [{ builtIn: "desc" }, { createdAt: "asc" }],
     })
     const base = config.publicUrl ?? `${req.protocol}://${req.headers.host}`
@@ -1038,7 +1044,7 @@ export function buildApp(): FastifyInstance {
         configuration: {
           settings: Object.fromEntries(cfg.map((c) => [c.detector, c.settings])),
           sources: await prisma.connection.findMany({
-            where: { tenantId: t.id },
+            where: { tenantId: t.id, removedAt: null },
             select: { id: true, label: true, kind: true },
           }),
         },
@@ -1246,7 +1252,11 @@ export function buildApp(): FastifyInstance {
   })
 
   // ─── privileged actions ────────────────────────────────────────────────────────────────────────
-  const OPEN = z.object({ action: z.string().min(1).max(120), params: z.record(z.string(), z.unknown()) })
+  const OPEN = z.object({
+    action: z.string().min(1).max(120),
+    params: z.record(z.string(), z.unknown()),
+    replacementToken: z.string().max(4096).optional(),
+  })
   app.post("/api/actions/open", async (req, reply) => {
     const t = await tenant()
     if (!t) return reply.code(404).send({ error: "no tenant" })
@@ -1262,6 +1272,7 @@ export function buildApp(): FastifyInstance {
         actor: { externalId: actor.externalId, role: actor.role },
         action: parsed.data.action,
         params: parsed.data.params,
+        replacementToken: parsed.data.replacementToken,
       })
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, "action open failed")

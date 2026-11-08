@@ -132,6 +132,9 @@ model Connection {
   /// decision to observe.
   builtIn Boolean @default(false)
 
+  /// Removed sources remain as evidence provenance, but cannot collect or be reactivated.
+  removedAt DateTime?
+
   /// Built-in connectors start INACTIVE. Observing a system is a choice someone makes, with a
   /// signature, rather than a default that happens to them.
   active            Boolean   @default(false)
@@ -421,6 +424,8 @@ model PendingAction {
   action          String
   /// Frozen when the approval is opened. What gets executed, and what the receipt is verified against.
   params          Json
+  /// Optional credential replacement. Only its ciphertext digest enters the signed params.
+  secretCiphertext String?
   /// The execution target bound into the signed payload: this instance.
   target          String
   /// Where the approver signs — the console's /approve page for this nonce.

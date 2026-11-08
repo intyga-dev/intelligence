@@ -133,8 +133,8 @@ export async function overview(tenantId: string, since: Date): Promise<Overview>
     prisma.finding.count({
       where: { tenantId, status: { in: ["new", "investigating"] }, severity: "critical" },
     }),
-    prisma.connection.count({ where: { tenantId } }),
-    prisma.connection.count({ where: { tenantId, active: true } }),
+    prisma.connection.count({ where: { tenantId, removedAt: null } }),
+    prisma.connection.count({ where: { tenantId, removedAt: null, active: true } }),
     prisma.event.findFirst({ where: { tenantId }, orderBy: { at: "desc" }, select: { at: true } }),
   ])
   return {

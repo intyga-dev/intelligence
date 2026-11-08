@@ -4,6 +4,19 @@ Version 1.0.0 includes 21 connectors. This guide covers custom events, connector
 [native provider setup](#native-provider-integrations). The [README catalogue](../README.md#supported-connectors)
 lists all sources; each integration has a defined collection scope and needs live-account validation.
 
+Administrators can use **Edit configuration** on a GitHub connector to change repositories, settings
+or its token. Leave **Replacement GitHub token** empty to keep the saved credential. Changes take
+effect only after passkey approval; collected history and polling cursors are retained. Replacement
+tokens stay encrypted on the Intelligence host. Only a digest of the encrypted replacement enters
+the signed approval parameters.
+
+**Remove connector** also requires approval. It stops future collection, clears the saved credential
+and removes the source from the connector list and configuration selectors. Historical events and
+findings remain available. A collection already in progress may finish. Removal does not revoke a
+provider token or unregister a provider webhook; do that in the provider if it is no longer needed.
+Built-in connectors can be switched off but cannot be removed. To connect a removed source again,
+add a new connector and approve its activation.
+
 There are two ways to get events from a system Intelligence does not ship a connector for:
 
 1. **Send them to the custom webhook.** No code in this repository. Anything that can make a

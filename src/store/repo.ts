@@ -440,7 +440,7 @@ export async function disabledDetectors(tenantId: string): Promise<Set<string>> 
 
 export async function activeConnections(kind?: "intyga" | "github") {
   return prisma.connection.findMany({
-    where: { active: true, ...(kind ? { kind } : {}) },
+    where: { removedAt: null, active: true, ...(kind ? { kind } : {}) },
     select: { id: true, tenantId: true, kind: true, label: true, config: true },
   })
 }
@@ -455,7 +455,7 @@ export async function activeConnections(kind?: "intyga" | "github") {
  */
 export async function connectionForIngest(id: string, kind: string) {
   return prisma.connection.findFirst({
-    where: { id, kind },
+    where: { id, kind, removedAt: null },
     select: { id: true, tenantId: true, secretCiphertext: true, active: true, serviceId: true },
   })
 }

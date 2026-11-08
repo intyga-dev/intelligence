@@ -61,7 +61,7 @@ export interface TickReport {
 async function pollConnectors(): Promise<TickReport["polled"]> {
   const report: TickReport["polled"] = {}
   const connections = await prisma.connection.findMany({
-    where: { active: true },
+    where: { removedAt: null, active: true },
     select: {
       id: true,
       tenantId: true,
