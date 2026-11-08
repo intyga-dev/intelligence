@@ -126,7 +126,7 @@ model Connection {
   /// For `github`: a read-only token. Encrypted at rest; never selected into a client response.
   secretCiphertext String?
 
-  /// Built-in connectors are provisioned with the tenant and cannot be deleted, only switched off.
+  /// Built-in connectors are provisioned with the tenant and can be edited or switched off, not deleted.
   /// The Intyga connector is built in because every Intelligence tenant already has an Intyga
   /// relationship — it is what authenticates them — so there is nothing to configure, only a
   /// decision to observe.

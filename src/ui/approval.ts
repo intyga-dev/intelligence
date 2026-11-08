@@ -30,7 +30,7 @@ export const APPROVAL_JS = `
   try{
    params=JSON.parse(button.dataset.params||'{}');
    const tokenInput=button.dataset.secretInput?document.getElementById(button.dataset.secretInput):null;
-   const requestBody=JSON.stringify({action:button.dataset.action,params,...(tokenInput?{replacementToken:tokenInput.value}:{})});
+   const requestBody=JSON.stringify({action:button.dataset.action,params,...(tokenInput?{[button.dataset.secretParameter||'replacementToken']:tokenInput.value}:{})});
    if(tokenInput)tokenInput.value='';
    const res=await fetch('/api/actions/open',{method:'POST',headers:{'content-type':'application/json'},body:requestBody});opened=await res.json();
    if(!res.ok)throw new Error(opened.error||'Could not open approval.');

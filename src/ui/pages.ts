@@ -283,7 +283,7 @@ ${o.rows
     return `
 <div class="card">
   <div class="row" style="margin-bottom:9px">
-    <h2>${c.kind === "github" ? `<a href="/connectors/${esc(c.id)}/edit">${esc(c.label)}</a>` : esc(c.label)}</h2>
+    <h2>${o.actor?.role === "ADMIN" ? `<a href="/connectors/${esc(c.id)}/edit">${esc(c.label)}</a>` : esc(c.label)}</h2>
     <span class="badge ${c.active ? "on" : "off"}">${c.active ? "active" : "inactive"}</span>
     ${c.builtIn ? `<span class="badge">built in</span>` : ""}
     <span class="badge">${c.mode}</span>
@@ -303,7 +303,7 @@ ${o.rows
           })
     }</span>
   </div>
-  ${c.kind === "github" ? `<p><a class="btn" href="/connectors/${esc(c.id)}/edit">Edit configuration</a></p>` : ""}
+  ${o.actor?.role === "ADMIN" ? `<p><a class="btn" href="/connectors/${esc(c.id)}/edit">Edit configuration</a></p>` : ""}
   ${!c.builtIn && o.actor?.role === "ADMIN" ? `<p>${actionBtn({ label: "Remove connector", action: "intelligence.connector.remove", params: { connectionId: c.id }, cls: "ghost" })}</p>` : ""}
   <div style="margin-bottom:12px"><span class="badge ${health.tone}">${esc(health.label)}</span>
     <p class="mut" style="margin:6px 0 0;font-size:12.5px">${esc(health.detail)}</p></div>

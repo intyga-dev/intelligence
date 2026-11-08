@@ -45,7 +45,7 @@ import { listServices, serviceDetail } from "../store/services.ts"
 import { servicesPage, servicePage } from "../ui/services.ts"
 import { demoPage } from "../ui/demo.ts"
 import { profilePage } from "../ui/profile.ts"
-import { githubEditPage } from "../ui/connectorEdit.ts"
+import { connectorEditPage, githubEditPage } from "../ui/connectorEdit.ts"
 import { DEFAULT_REGRESSION_CONFIG } from "../domain/detectors/deployRegression.ts"
 import { DETECTOR_INFO, DETECTORS, type DetectorId } from "../domain/detectors/index.ts"
 import { previewRequest, projectForJudgment } from "../redaction/project.ts"
@@ -884,17 +884,15 @@ export function buildApp(): FastifyInstance {
       where: {
         id: parsed.data.id,
         tenantId: actor.tenantId,
-        kind: "github",
-        builtIn: false,
         removedAt: null,
       },
-      select: { id: true, label: true, config: true },
+      select: { id: true, kind: true, label: true, config: true },
     })
     if (!connection) return reply.code(404).send({ error: "connector not found" })
-    return html(
-      reply,
-      githubEditPage({ ...connection, config: connection.config as Record<string, unknown>, actor }),
-    )
+    const def = connectorFor(connection.kind)
+    if (!def) return reply.code(404).send({ error: "connector is unavailable in this build" })
+    const options = { ...connection, def, config: connection.config as Record<string, unknown>, actor }
+    return html(reply, connection.kind === "github" ? githubEditPage(options) : connectorEditPage(options))
   })
 
   app.get("/connectors", async (req, reply) => {
@@ -1256,6 +1254,7 @@ export function buildApp(): FastifyInstance {
     action: z.string().min(1).max(120),
     params: z.record(z.string(), z.unknown()),
     replacementToken: z.string().max(4096).optional(),
+    replacementSecret: z.string().max(65536).optional(),
   })
   app.post("/api/actions/open", async (req, reply) => {
     const t = await tenant()
@@ -1273,6 +1272,7 @@ export function buildApp(): FastifyInstance {
         action: parsed.data.action,
         params: parsed.data.params,
         replacementToken: parsed.data.replacementToken,
+        replacementSecret: parsed.data.replacementSecret,
       })
     } catch (err) {
       req.log.warn({ err: (err as Error).message }, "action open failed")

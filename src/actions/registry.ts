@@ -6,12 +6,14 @@ import { CONFIGURE_DETECTOR } from "../domain/detectors/operationalSettings.ts"
 import { isProdLike } from "../config.ts"
 import { prisma } from "../store/client.ts"
 import { decryptSecret, encryptSecret } from "../store/crypto.ts"
+import { CONFIGURE_CONNECTOR, GITHUB_REPOS } from "./connectorSettings.ts"
 
 /** Privileged Intelligence actions. The value is the signed actionType, so it binds the action to its parameters. */
 export type GatedAction =
   | "intelligence.service.create"
   | "intelligence.connector.assign-service"
   | "intelligence.connector.configure-github"
+  | "intelligence.connector.configure"
   | "intelligence.connector.activate"
   | "intelligence.connector.deactivate"
   | "intelligence.connector.remove"
@@ -67,30 +69,48 @@ function defineAction<S extends z.ZodTypeAny>(def: ActionDef<S>): ActionDef<S> {
 
 const connectorParams = z.object({ connectionId: z.uuid() })
 
+function verifiedReplacement(digest: string | undefined, receipt: ActionReceipt): string | undefined {
+  if (!digest) return undefined
+  if (
+    !receipt.secretCiphertext ||
+    createHash("sha256").update(receipt.secretCiphertext).digest("hex") !== digest ||
+    !decryptSecret(receipt.secretCiphertext)
+  )
+    throw new Error("The approved replacement credential is unavailable or has changed")
+  return receipt.secretCiphertext
+}
+
 export const ACTIONS = {
+  "intelligence.connector.configure": defineAction({
+    impact: "medium",
+    schema: CONFIGURE_CONNECTOR,
+    summary: (p) =>
+      `Configure ${p.kind} connector ${p.connectionId} (${p.label}): ${JSON.stringify(p.config)}. ${p.secretDigest ? "Replace its credential. For webhook sources, update the sender to use the replacement after approval." : "Keep its existing credential."} Keep collected history and polling cursors.`,
+    run: async (tenantId, p, receipt) => {
+      const replacement = verifiedReplacement(p.secretDigest, receipt)
+      await prisma.$transaction(async (tx) => {
+        const where = { id: p.connectionId, tenantId, kind: p.kind, removedAt: null }
+        const source = await tx.connection.findFirst({ where, select: { config: true } })
+        if (!source) throw new Error("Connector not found in this tenant")
+        const updated = await tx.connection.updateMany({
+          where,
+          data: {
+            label: p.label,
+            config: { ...(source.config as Record<string, string>), ...p.config },
+            ...(replacement ? { secretCiphertext: replacement } : {}),
+          },
+        })
+        if (updated.count !== 1) throw new Error("Connector not found in this tenant")
+      })
+    },
+  }),
   "intelligence.connector.configure-github": defineAction({
     impact: "medium",
     schema: z
       .object({
         connectionId: z.uuid(),
         label: z.string().trim().min(1).max(80),
-        repos: z
-          .string()
-          .trim()
-          .min(1)
-          .max(4000)
-          .refine((value) => {
-            const repos = value.split(/[\s,]+/).filter(Boolean)
-            return (
-              repos.length > 0 &&
-              repos.length <= 20 &&
-              repos.every(
-                (repo) =>
-                  /^[\w.-]+\/[\w.-]+$/.test(repo) &&
-                  repo.split("/").every((part) => part !== "." && part !== ".."),
-              )
-            )
-          }, "Use 1–20 repositories in owner/name format"),
+        repos: GITHUB_REPOS,
         deployWorkflows: z.string().trim().max(2000),
         pathMap: z.enum(["generic", "intyga-core"]),
         tokenDigest: z
@@ -102,13 +122,7 @@ export const ACTIONS = {
     summary: (p) =>
       `Configure GitHub source ${p.connectionId} (${p.label}): repositories ${p.repos}; deploy workflows ${p.deployWorkflows || "none"}; sensitive-path map ${p.pathMap}. ${p.tokenDigest ? "Replace its GitHub token." : "Keep its existing token."} Keep collected history.`,
     run: async (tenantId, p, receipt) => {
-      if (
-        p.tokenDigest &&
-        (!receipt.secretCiphertext ||
-          createHash("sha256").update(receipt.secretCiphertext).digest("hex") !== p.tokenDigest ||
-          !decryptSecret(receipt.secretCiphertext))
-      )
-        throw new Error("The approved replacement token is unavailable or has changed")
+      const replacement = verifiedReplacement(p.tokenDigest, receipt)
       await prisma.$transaction(async (tx) => {
         const connection = await tx.connection.findFirst({
           where: { id: p.connectionId, tenantId, kind: "github", builtIn: false, removedAt: null },
@@ -119,7 +133,7 @@ export const ACTIONS = {
           where: { id: p.connectionId, tenantId, kind: "github", builtIn: false, removedAt: null },
           data: {
             label: p.label,
-            ...(p.tokenDigest ? { secretCiphertext: receipt.secretCiphertext } : {}),
+            ...(replacement ? { secretCiphertext: replacement } : {}),
             config: {
               ...(connection.config as Record<string, string>),
               repos: p.repos,

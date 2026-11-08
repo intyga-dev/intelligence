@@ -9,6 +9,14 @@
 .connectorEdit select {
   min-height: 40px;
 }
+.connectorEdit textarea {
+  width: 100%;
+  resize: vertical;
+}
+.connectorEdit input[type="checkbox"] {
+  min-height: auto;
+  width: auto;
+}
 .connectorEdit .help {
   font-size: 12px;
   line-height: 1.5;

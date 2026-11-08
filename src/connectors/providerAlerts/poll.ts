@@ -229,10 +229,10 @@ export const betterStackConnector: PollConnector = {
   fields: [
     {
       name: "token",
-      label: "Team API token",
+      label: "Incidents API token",
       secret: true,
       required: true,
-      help: "Use a token for the relevant team, not a global account token. The connector only makes GET requests; the token may have broader vendor permissions.",
+      help: "Prefer a team-scoped Incidents API token. Global API tokens also work. Use read-only access where available; this connector only makes GET requests.",
     },
   ],
   setup: [

@@ -52,7 +52,8 @@ interface Base {
   /** Step-by-step setup shown after the connector is created. */
   setup: string[]
   /**
-   * Built-in connectors are provisioned with the tenant and cannot be removed, only switched off.
+   * Built-in connectors are provisioned with the tenant. They can be edited or switched off, but
+   * cannot be removed.
    * Intyga is built in because every tenant already has the relationship.
    */
   builtIn?: boolean

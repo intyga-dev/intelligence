@@ -4,17 +4,23 @@ Version 1.0.0 includes 21 connectors. This guide covers custom events, connector
 [native provider setup](#native-provider-integrations). The [README catalogue](../README.md#supported-connectors)
 lists all sources; each integration has a defined collection scope and needs live-account validation.
 
-Administrators can use **Edit configuration** on a GitHub connector to change repositories, settings
-or its token. Leave **Replacement GitHub token** empty to keep the saved credential. Changes take
-effect only after passkey approval; collected history and polling cursors are retained. Replacement
-tokens stay encrypted on the Intelligence host. Only a digest of the encrypted replacement enters
-the signed approval parameters.
+Administrators can use **Edit configuration** on every registered connector to change its label,
+provider settings and credential. Forms follow each provider's field definitions, including multiline
+Google service-account JSON and Prometheus queries. Leave the replacement credential empty to keep
+the saved one. Webhook sources with generated secrets offer **Generate replacement secret**; copy
+the new secret and update the sender after approval. Saved credentials are never displayed.
+
+Changes take effect only after passkey approval; collected history and polling cursors are retained.
+Replacement credentials stay encrypted on the Intelligence host. Non-secret settings and a digest
+of the encrypted replacement enter the signed approval parameters. The built-in INTYGA connector
+supports label and webhook-secret edits; this does not change the deployment's sign-in credentials,
+workspace binding or trust anchor.
 
 **Remove connector** also requires approval. It stops future collection, clears the saved credential
 and removes the source from the connector list and configuration selectors. Historical events and
 findings remain available. A collection already in progress may finish. Removal does not revoke a
 provider token or unregister a provider webhook; do that in the provider if it is no longer needed.
-Built-in connectors can be switched off but cannot be removed. To connect a removed source again,
+Built-in connectors can be edited or switched off but cannot be removed. To connect a removed source again,
 add a new connector and approve its activation.
 
 There are two ways to get events from a system Intelligence does not ship a connector for:

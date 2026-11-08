@@ -541,6 +541,203 @@ test("connector removal cannot reach built-in or foreign sources and members can
   )
 })
 
+test("every registered connector supports signed edits and encrypted credential replacement", {
+  skip,
+}, async () => {
+  const t = await connect()
+  const cookie = await signIn()
+  const { allConnectors } = await import("../connectors/index.ts")
+  const { encryptSecret, decryptSecret } = await import("../store/crypto.ts")
+  for (const def of allConnectors()) {
+    gateway.reset()
+    const config = Object.fromEntries(
+      def.fields
+        .filter((f) => !f.secret)
+        .map((f) => [
+          f.name,
+          f.name === "repos" ? "acme/core" : f.name === "pathMap" ? "generic" : "test-value",
+        ]),
+    )
+    const c = await prisma.connection.create({
+      data: {
+        tenantId: t.id,
+        kind: def.kind,
+        label: def.label,
+        builtIn: Boolean(def.builtIn),
+        active: true,
+        config: { ...config, preserved: "history-setting" },
+        secretCiphertext: encryptSecret("old-credential"),
+      },
+    })
+    await prisma.sourceCursor.create({
+      data: { connectionId: c.id, name: "position", value: "keep-this-cursor" },
+    })
+    const edit = await app.inject({ url: `/connectors/${c.id}/edit`, headers: { cookie } })
+    assert.equal(edit.statusCode, 200, def.kind)
+    assert.doesNotMatch(edit.body, /old-credential/)
+    assert.equal(edit.body.includes(c.secretCiphertext!), false)
+    for (const field of def.fields.filter((f) => !f.secret))
+      assert.ok(edit.body.includes(`name="${field.name}"`), `${def.kind}: ${field.name}`)
+    if (def.kind === "google-workspace") assert.match(edit.body, /<textarea id="connector-secret"/)
+    if (def.builtIn)
+      assert.match(edit.body, /Sign-in credentials and trust anchors are managed by the deployment operator/)
+    const replacementSecret =
+      def.kind === "google-workspace"
+        ? '{\n  "type": "service_account",\n  "private_key": "test-only-key"\n}'
+        : "whsec_replacement-credential-with-32-characters"
+    const params = { connectionId: c.id, kind: def.kind, label: `${def.label} updated`, config }
+    const opened = await app.inject({
+      method: "POST",
+      url: "/api/actions/open",
+      headers: { cookie },
+      payload: { action: "intelligence.connector.configure", params, replacementSecret },
+    })
+    assert.equal(opened.statusCode, 200, `${def.kind}: ${opened.body}`)
+    const pending = await prisma.pendingAction.findUniqueOrThrow({ where: { nonce: gateway.state.nonce } })
+    assert.ok(pending.secretCiphertext)
+    assert.equal(decryptSecret(pending.secretCiphertext), replacementSecret)
+    const frozen = gateway.state.authorizeCalls[0]
+    assert.ok(frozen)
+    assert.deepEqual(frozen.params.config, config)
+    assert.equal(JSON.stringify(frozen).includes(pending.secretCiphertext), false)
+    assert.equal(JSON.stringify(frozen).includes(JSON.stringify(replacementSecret).slice(1, -1)), false)
+    assert.equal((await poll(cookie)).json().status, "pending")
+    assert.equal(
+      (await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).secretCiphertext,
+      c.secretCiphertext,
+    )
+    gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+    gateway.state.status = "APPROVED"
+    assert.equal((await poll(cookie)).json().status, "applied", def.kind)
+    const updated = await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })
+    assert.equal(updated.label, params.label)
+    assert.equal(decryptSecret(updated.secretCiphertext!), replacementSecret)
+    assert.deepEqual(updated.config, { ...config, preserved: "history-setting" })
+    assert.equal(updated.active, true)
+    assert.equal(updated.builtIn, c.builtIn)
+    assert.equal(await prisma.sourceCursor.count({ where: { connectionId: c.id } }), 1)
+    assert.equal(
+      (await prisma.pendingAction.findUniqueOrThrow({ where: { nonce: pending.nonce } })).secretCiphertext,
+      null,
+    )
+    assert.equal((await poll(cookie)).json().status, "applied")
+    assert.equal(gateway.state.consumeCalls.length, 1)
+  }
+})
+
+for (const outcome of [
+  "blank",
+  "denied",
+  "tampered-secret",
+  "tampered-kind",
+  "foreign",
+  "wrong-kind",
+  "removed",
+] as const) {
+  test(`general connector edits handle ${outcome} without replacing the credential`, { skip }, async () => {
+    const t = await connect()
+    const cookie = await signIn()
+    const { encryptSecret } = await import("../store/crypto.ts")
+    const foreign = await prisma.tenant.create({ data: { slug: "foreign-edit", name: "Foreign" } })
+    const c = await prisma.connection.create({
+      data: {
+        tenantId: outcome === "foreign" ? foreign.id : t.id,
+        kind: "better-stack",
+        label: "Better Stack",
+        secretCiphertext: encryptSecret("keep-me"),
+        ...(outcome === "removed" ? { removedAt: new Date() } : {}),
+      },
+    })
+    const params = {
+      connectionId: c.id,
+      kind: outcome === "wrong-kind" ? "stripe" : c.kind,
+      label: "Updated",
+      config: {},
+    }
+    const opened = await app.inject({
+      method: "POST",
+      url: "/api/actions/open",
+      headers: { cookie },
+      payload: {
+        action: "intelligence.connector.configure",
+        params,
+        replacementSecret: outcome === "blank" ? "   " : "replacement-test-token",
+      },
+    })
+    assert.equal(opened.statusCode, 200, opened.body)
+    const frozen = gateway.state.authorizeCalls[0]
+    assert.ok(frozen)
+    gateway.state.receipt = signedReceipt(gateway.state.nonce, frozen)
+    gateway.state.status = outcome === "denied" ? "DENIED" : "APPROVED"
+    if (outcome === "tampered-secret")
+      await prisma.pendingAction.update({
+        where: { nonce: gateway.state.nonce },
+        data: { secretCiphertext: encryptSecret("different-token") },
+      })
+    if (outcome === "tampered-kind")
+      await prisma.pendingAction.update({
+        where: { nonce: gateway.state.nonce },
+        data: { params: { ...frozen.params, kind: "stripe" } },
+      })
+    assert.equal((await poll(cookie)).json().status, outcome === "blank" ? "applied" : "refused")
+    assert.equal(
+      (await prisma.connection.findUniqueOrThrow({ where: { id: c.id } })).secretCiphertext,
+      c.secretCiphertext,
+    )
+    assert.equal(
+      (await prisma.pendingAction.findUniqueOrThrow({ where: { nonce: gateway.state.nonce } }))
+        .secretCiphertext,
+      null,
+    )
+    if (outcome === "blank") assert.deepEqual(frozen.params, params)
+  })
+}
+
+test("general connector editing rejects credential leaks, weak generated secrets and member requests before approval", {
+  skip,
+}, async () => {
+  const t = await connect()
+  const cookie = await signIn()
+  const c = await prisma.connection.create({ data: { tenantId: t.id, kind: "webhook", label: "Webhook" } })
+  const params = { connectionId: c.id, kind: c.kind, label: c.label, config: {} }
+  for (const payload of [
+    { action: "intelligence.connector.configure", params, replacementSecret: "too-short" },
+    { action: "intelligence.connector.configure", params: { ...params, secretDigest: "0".repeat(64) } },
+    {
+      action: "intelligence.connector.configure",
+      params: { ...params, config: { token: "must-not-leave-host" } },
+    },
+    { action: "intelligence.connector.configure", params, replacementToken: "wrong-credential-field" },
+    { action: "intelligence.service.create", params: { name: "API" }, replacementSecret: "wrong-action" },
+  ]) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/actions/open",
+      headers: { cookie },
+      payload,
+    })
+    assert.equal(response.statusCode, 400, response.body)
+  }
+  await prisma.member.updateMany({ where: { tenantId: t.id }, data: { role: "MEMBER" } })
+  assert.equal((await app.inject({ url: `/connectors/${c.id}/edit`, headers: { cookie } })).statusCode, 403)
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/actions/open",
+        headers: { cookie },
+        payload: {
+          action: "intelligence.connector.configure",
+          params,
+        },
+      })
+    ).statusCode,
+    400,
+  )
+  assert.equal(gateway.state.authorizeCalls.length, 0)
+  assert.equal(await prisma.pendingAction.count(), 0)
+})
+
 test("polling waits for approval, verifies frozen parameters, redeems once and executes once", {
   skip,
 }, async () => {
