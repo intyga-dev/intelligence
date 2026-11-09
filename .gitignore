@@ -1,0 +1,28 @@
+node_modules/
+dist/
+coverage/
+src/generated/
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.pem
+*.key
+*.p12
+*.db
+*.sqlite
+.DS_Store
+*.tsbuildinfo
+
+# Private keys by every spelling this project actually uses. The quickstart tells you to keep the
+# platform RP key at ./rp.pk8, and *.pem/*.key above do not match it.
+*.pk8
+*.pkcs8
+*.jwk
+# ROOT-ANCHORED on purpose. The unanchored `rp.*` also matched src/gate/rp.ts — the module that runs
+# every approval ceremony — so it was never committed and a fresh clone did not compile.
+/rp.*
+.selfhost/
+
+# Deployment-specific public trust anchor and any adjacent local credentials.
+/config/

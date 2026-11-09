@@ -1,0 +1,54 @@
+# INTYGA Intelligence — runtime image.
+#
+# Multi-stage so the shipped image carries production dependencies and source only: no dev
+# toolchain, no test fixtures, no build cache. Runs as a non-root user because a service whose whole
+# job is reading other systems' telemetry should hold the least privilege that works.
+
+FROM node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS deps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+# Node 26 does not bundle Corepack; install exactly the declared package manager.
+RUN npm install --global "$(node -p 'require("./package.json").packageManager')"
+# Fetch into the store first so a lockfile-only change does not invalidate the whole layer.
+RUN pnpm fetch --prod=false
+COPY . .
+RUN pnpm install --frozen-lockfile --offline
+# The runtime user is `node`, not the build host's user. Normalise modes so a checkout with a
+# restrictive umask (a 600 file) cannot produce an image that crashes on its first import.
+RUN chmod -R a+rX src scripts prisma
+
+# Prisma's generated client is architecture-specific, so it is generated inside the image rather
+# than copied from the host.
+#
+# `generate` reads no database, but prisma.config.ts resolves DIRECT_URL eagerly, so the build needs
+# SOME value. It is deliberately one that cannot connect to anything (port 1 on loopback) rather
+# than a plausible-looking default: a build-time placeholder that could accidentally resolve to a
+# real host is how a build step ends up touching a live database.
+RUN DIRECT_URL="postgresql://build:build@127.0.0.1:1/build" pnpm exec prisma generate
+
+FROM node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/src ./src
+COPY --from=deps /app/prisma ./prisma
+COPY --from=deps /app/prisma.config.ts ./prisma.config.ts
+# Operator utilities for local data and connectors. INTYGA configuration comes from the deployment.
+COPY --from=deps /app/scripts ./scripts
+COPY --from=deps /app/package.json ./package.json
+
+# node:26-slim ships a `node` user (uid 1000). Reuse it rather than minting another.
+# Prisma downloads its schema engine (what `migrate deploy` runs) lazily into node_modules on first
+# use. As the runtime user that write is denied, and it would be a network fetch in production anyway.
+# Fetch it here, in THIS stage, so the engine matches this image's OpenSSL. The URL is a placeholder:
+# `prisma version` only needs the config to load.
+RUN DIRECT_URL="postgresql://build:build@127.0.0.1:1/build" node_modules/.bin/prisma version >/dev/null
+USER node
+
+EXPOSE 4100
+# tsx runs the TypeScript sources directly.
+# Invoke the installed tsx directly; runtime startup needs no package manager or registry access.
+CMD ["node_modules/.bin/tsx", "src/server/main.ts"]

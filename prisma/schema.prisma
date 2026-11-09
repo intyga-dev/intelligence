@@ -1,0 +1,564 @@
+// Intyga Intelligence — schema.
+//
+// Multi-tenant from the first migration even though V0 creates exactly one tenant. Retrofitting a
+// tenant column onto a schema that grew up single-tenant means auditing every query in the codebase
+// for the one that forgot; starting with it means the compiler and the indexes carry the scoping.
+//
+// Note what is NOT here: no audit ledger, no receipts, no approvals. This service holds derived
+// observations and the findings built from them. It is not a system of record for anything, and it
+// must never become one — the systems it observes already are.
+//
+// ─── What `tenantId` is, and what it is not ────────────────────────────────────────────────────
+//
+// There is NO row-level security in this database. Tenant scoping is application-level: an explicit
+// `where` on every query, and nothing underneath it. A `tenantId` column normally reads as an
+// isolation boundary, so this says plainly that it is not one — it is a discriminator, and the
+// query that forgets it returns another tenant's rows with no second line of defence.
+//
+// That is acceptable because of how this is deployed: one self-hosted instance, one organisation's
+// own data, no untrusted party holding an account on it. The single-tenant deployment IS the
+// isolation. The column exists so that adding real isolation later is a migration of queries rather
+// than of the schema.
+//
+// It stops being acceptable the moment two unrelated organisations share an instance. Before that,
+// this needs actual RLS: a non-owner application role, FORCEd policies keyed on a session GUC, and
+// a boot-time check that refuses to start if any table the app role can read has RLS off.
+// Enforce tenant isolation against the database catalogue, including tables scoped through joins.
+// Do not offer multi-tenant hosting of this service without doing that first.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7: the CLI's connection URL lives in prisma.config.ts, not here. Runtime queries go
+// through @prisma/adapter-pg in src/store/client.ts.
+datasource db {
+  provider = "postgresql"
+}
+
+/// An Intelligence customer. V0 has one row; the isolation is real from day one.
+model Tenant {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+
+  // INTYGA connection settings belong to deployment configuration, never this database.
+
+  connections     Connection[]
+  events          Event[]
+  findings        Finding[]
+  deployments     Deployment[]
+  codeChanges     CodeChange[]
+  members         Member[]
+  alertRules      AlertRule[]
+  detectors       DetectorConfig[]
+  cursors         DetectorCursor[]
+  services        Service[]
+  reviewProviders ReviewProvider[]
+}
+
+/// A system the team operates (for example API production or the billing worker).
+model Service {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @db.Uuid
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now())
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connections Connection[]
+  events      Event[]
+  findings    Finding[]
+
+  @@unique([tenantId, name])
+}
+
+/// An Intelligence admin.
+///
+/// Intelligence has no password and no identity provider of its own: a member IS an active member of
+/// the bound INTYGA workspace, signed in through INTYGA (OpenID Connect, passkey at the console).
+/// `externalId` is their email as the id_token names them; `role` is their workspace role at the
+/// last sign-in. Membership is managed in INTYGA, never here.
+///
+/// That is why INTYGA is a hard dependency rather than a connector: remove it and there is no way
+/// to authenticate anyone.
+model Member {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @db.Uuid
+  /// The person's email, lower-cased, as the INTYGA id_token names them.
+  externalId  String
+  label       String
+  /// ADMIN administers Intelligence; MEMBER reads it. Refreshed on every sign-in.
+  role        String    @default("MEMBER")
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  lastLoginAt DateTime?
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId, active])
+}
+
+/// One configured data source for one tenant.
+model Connection {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  /// Free text, resolved against the in-code connector registry (src/connectors/registry.ts).
+  ///
+  /// Deliberately NOT a Postgres enum: adding a connector should be writing one file, not a schema
+  /// migration on a table that already holds customer data. The registry is the source of truth and
+  /// an unknown kind is an inert row rather than a failed deploy.
+  kind     String
+  label    String
+  serviceId String? @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  /// Non-secret settings: repositories to watch, deploy workflow names, detector thresholds.
+  config Json @default("{}")
+
+  /// For `intyga`: the webhook signing secret, used ONLY to verify inbound requests. This is not a
+  /// credential that can call anything — see scripts/check-no-intyga-client.mjs.
+  /// For `github`: a read-only token. Encrypted at rest; never selected into a client response.
+  secretCiphertext String?
+
+  /// Built-in connectors are provisioned with the tenant and can be edited or switched off, not deleted.
+  /// The Intyga connector is built in because every Intelligence tenant already has an Intyga
+  /// relationship — it is what authenticates them — so there is nothing to configure, only a
+  /// decision to observe.
+  builtIn Boolean @default(false)
+
+  /// Removed sources remain as evidence provenance, but cannot collect or be reactivated.
+  removedAt DateTime?
+
+  /// Built-in connectors start INACTIVE. Observing a system is a choice someone makes, with a
+  /// signature, rather than a default that happens to them.
+  active            Boolean   @default(false)
+  activatedAt       DateTime?
+  /// The platform receipt that authorised the current state. Provenance for "who turned this on".
+  activationReceipt String?
+
+  /// Poll health contains only safe status, never upstream error bodies, URLs or credentials.
+  lastPolledAt       DateTime?
+  lastPollSuccessAt  DateTime?
+  lastPollError      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rawEvents   RawEvent[]
+  events      Event[]
+  cursors     SourceCursor[]
+  deployments Deployment[]
+  codeChanges CodeChange[]
+
+  @@index([tenantId, kind])
+}
+
+/// The delivery exactly as received, before interpretation.
+///
+/// Kept separate from `Event` so a normalizer bug is recoverable by replay rather than by asking the
+/// source to resend — which, for a push feed with a bounded retry schedule, is not an option.
+/// `@@unique([connectionId, sourceId])` is the idempotency guarantee: delivery is at-least-once.
+model RawEvent {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectionId   String    @db.Uuid
+  sourceId       String
+  receivedAt     DateTime  @default(now())
+  body           Json
+  /// Null until normalized; set so a replay can find what never made it through.
+  normalizedAt   DateTime?
+  normalizeError String?
+
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, sourceId])
+  @@index([connectionId, receivedAt])
+  @@index([normalizedAt])
+}
+
+/// A normalized observation. Source-agnostic by construction — detectors only ever see this.
+model Event {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String   @db.Uuid
+  serviceId      String?  @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  connectionId   String   @db.Uuid
+  source         String
+  sourceId       String
+  kind           String
+  at             DateTime
+  subjectRef     String?
+  correlationRef String?
+  attrs          Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, sourceId])
+  /// The burst detector's exact access path: one subject's history of one kind, newest first.
+  @@index([connectionId, subjectRef, kind, at])
+  @@index([tenantId, kind, at])
+  @@index([tenantId, at])
+  @@index([tenantId, serviceId, at])
+  @@index([correlationRef])
+}
+
+/// A deploy, derived from a CI workflow run. The anchor for regression correlation.
+model Deployment {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @db.Uuid
+  connectionId String   @db.Uuid
+  repo         String
+  runId        String
+  workflow     String
+  environment  String
+  sha          String
+  at           DateTime
+  conclusion   String
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, runId])
+  @@index([tenantId, at])
+  @@index([tenantId, environment, at])
+  @@index([sha])
+}
+
+/// A pull request and the paths it touched.
+model CodeChange {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String    @db.Uuid
+  connectionId String    @db.Uuid
+  repo         String
+  number       Int
+  title        String
+  headSha      String
+  state        String
+  mergedAt     DateTime?
+  observedAt   DateTime  @default(now())
+  /// string[] — the changed-file list the sensitivity map runs over.
+  paths        Json      @default("[]")
+  additions    Int       @default(0)
+  deletions    Int       @default(0)
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, repo, number, headSha])
+  @@index([tenantId, observedAt])
+  @@index([headSha])
+}
+
+enum Severity {
+  info
+  low
+  medium
+  high
+  critical
+}
+
+enum Category {
+  security
+  engineering
+  product
+  customer
+  business
+}
+
+enum FindingStatus {
+  new
+  investigating
+  resolved
+  dismissed
+}
+
+/// The product. A short, prioritised, evidence-backed list.
+model Finding {
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String        @db.Uuid
+  serviceId  String?       @db.Uuid
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  category   Category
+  severity   Severity
+  title      String
+  summary    String?
+  confidence Float?
+  detectedAt DateTime
+  lastSeenAt DateTime
+  /// How many times the same CONDITION has been observed. Upserts increment rather than insert.
+  count      Int           @default(1)
+  status     FindingStatus @default(new)
+
+  /// Stable identity of the condition. The unique constraint is what keeps the list short.
+  dedupeKey String
+
+  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  evidence  Evidence[]
+  feedback  FindingFeedback[]
+  judgments JudgmentRequest[]
+
+  @@unique([tenantId, dedupeKey])
+  @@index([tenantId, status, severity, lastSeenAt])
+  @@index([tenantId, detectedAt])
+  @@index([tenantId, serviceId, status, lastSeenAt])
+}
+
+/// One piece of evidence. `kind: "assessment"` is the only model-sourced variant, and the domain
+/// refuses a finding that has nothing else — see src/domain/finding.ts.
+model Evidence {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  findingId String @db.Uuid
+  kind      String
+  /// Render order. Deterministic evidence is written first by construction.
+  ordinal   Int
+  data      Json
+
+  finding Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  @@index([findingId, ordinal])
+}
+
+enum JudgmentStatus {
+  PENDING
+  SENDING
+  DONE
+  FAILED
+  EXHAUSTED
+}
+
+/// Outbox for semantic classification.
+///
+/// Separate from the finding on purpose: a finding exists the moment deterministic evidence
+/// supports it, and classification is an additive step that may fail, retry or never run. Ingestion
+/// and detection must never wait on a model.
+model JudgmentRequest {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String         @db.Uuid
+  findingId     String         @db.Uuid
+  questionSet   String
+  provider      String         @default("typesafe")
+  model         String?
+  status        JudgmentStatus @default(PENDING)
+  attempts      Int            @default(0)
+  nextAttemptAt DateTime       @default(now())
+  lastError     String?
+
+  /// EXACTLY what was sent, and its digest. This is what makes "inspect what would go to the
+  /// provider" answerable after the fact rather than only before it.
+  sentState   Json?
+  stateDigest String?
+  response    Json?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  finding Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, provider, createdAt])
+  @@index([status, nextAttemptAt])
+  @@index([findingId])
+}
+
+enum Verdict {
+  useful
+  not_useful
+  investigating
+  expected
+  false_positive
+  fixed
+}
+
+/// Append-only human response. Recorded so `event → assessment → finding → response` stays
+/// reconstructable. Nothing is trained on this.
+model FindingFeedback {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  findingId String   @db.Uuid
+  actor     String
+  verdict   Verdict
+  note      String?
+  createdAt DateTime @default(now())
+
+  finding Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  @@index([findingId, createdAt])
+}
+
+/// Polling position for pull-based connectors (GitHub). Push connectors do not need one.
+model SourceCursor {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectionId String   @db.Uuid
+  name         String
+  value        String
+  updatedAt    DateTime @updatedAt
+
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, name])
+}
+
+enum PendingActionStatus {
+  AWAITING_SIGNATURE
+  APPLIED
+  REFUSED
+  EXPIRED
+}
+
+/// A privileged action waiting for its human signature.
+///
+/// The ceremony spans multiple HTTP requests, so pending state must survive process restarts.
+/// Parameters must be frozen at challenge time: re-reading them at completion would let a caller
+/// approve one thing and execute another, which is the entire class of attack the signature exists
+/// to prevent.
+model PendingAction {
+  bindingId       String
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String              @db.Uuid
+  /// The INTYGA approval nonce this action is bound to.
+  nonce           String              @unique
+  action          String
+  /// Frozen when the approval is opened. What gets executed, and what the receipt is verified against.
+  params          Json
+  /// Optional credential replacement. Only its ciphertext digest enters the signed params.
+  secretCiphertext String?
+  /// The execution target bound into the signed payload: this instance.
+  target          String
+  /// Where the approver signs — the console's /approve page for this nonce.
+  approveUrl      String
+  actorExternalId String
+  status          PendingActionStatus @default(AWAITING_SIGNATURE)
+  receiptSeq      Int?
+  error           String?
+  createdAt       DateTime            @default(now())
+  expiresAt       DateTime
+  appliedAt       DateTime?
+
+  @@index([tenantId, status])
+  @@index([expiresAt])
+}
+
+/// `email` is reserved: there is no mail sender, so rules on it are refused at creation.
+enum AlertChannel {
+  webhook
+  slack
+  email
+}
+
+/// A rule that turns findings into a notification.
+///
+/// Deliberately a filter over findings rather than a second detection engine: detectors decide what
+/// is true, alert rules decide what is worth waking someone for. Keeping those separate means
+/// tuning noise never changes what gets recorded.
+model AlertRule {
+  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId            String       @db.Uuid
+  name                String
+  /// Minimum severity that fires this rule.
+  minSeverity         Severity     @default(high)
+  /// Empty means every category.
+  categories          Category[]   @default([])
+  channel             AlertChannel
+  /// Destination, encrypted: a webhook URL is a credential — anyone holding it can post as us.
+  targetCipher        String
+  /// Host of the destination, in the clear. Shown to the approver and bound into the signed
+  /// activation, so a rule cannot be switched on for one host and deliver to another.
+  targetHost          String       @default("")
+  /// HMAC key for the `x-intelligence-signature` header, encrypted. Shown once at creation.
+  signingSecretCipher String?
+  /// OFF until a signed activation: turning a rule on is the moment findings start leaving the host.
+  active              Boolean      @default(false)
+  activatedAt         DateTime?
+  activationReceipt   String?
+  /// Suppression window so a recurring finding does not page every tick.
+  cooldownMinutes     Int          @default(60)
+  /// Last SUCCESSFUL delivery. Also the watermark: the next delivery carries findings seen after it.
+  lastFiredAt         DateTime?
+  lastAttemptAt       DateTime?
+  /// Authored text for the last failed delivery (a status code, "timed out"), null after a success.
+  lastError           String?
+  createdAt           DateTime     @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, active])
+}
+
+/// Per-tenant detector tuning. Absent means the detector's built-in defaults apply.
+model DetectorConfig {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  detector  String
+  enabled   Boolean  @default(true)
+  /// Threshold overrides, shape defined by the detector itself.
+  settings  Json     @default("{}")
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, detector])
+}
+
+/// How far an event-driven detector has read, per tenant.
+///
+/// The code-change and deploy-regression detectors act on individual events (a pull request, a
+/// deployment), unlike the burst detector, which re-reads a sliding window. Re-reading those would
+/// fold the same pull request into its finding on every tick — inflating the count and re-arming
+/// every alert. So each reads only what arrived after this mark, and moves it when it succeeds.
+/// Losing a row re-scans the lookback once; it never loses a finding.
+model DetectorCursor {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  detector  String
+  at        DateTime
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, detector])
+}
+
+/// A logged-in browser.
+///
+/// Opaque and server-side rather than a signed cookie carrying claims: a session that lives only in
+/// the cookie cannot be revoked, and "log out everywhere" is the one thing an admin console must be
+/// able to do after a laptop goes missing. The cookie carries a random token; only its SHA-256 is
+/// stored, so a database read does not yield usable sessions.
+model Session {
+  bindingId    String
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String    @db.Uuid
+  memberId     String    @db.Uuid
+  /// sha256 of the token in the cookie. The token itself is never stored.
+  tokenHash    String    @unique
+  createdAt    DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  /// The one-use approval that granted this browser access, or null for OIDC sign-in.
+  receiptNonce String?   @unique
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId, expiresAt])
+  @@index([expiresAt])
+}
+
+/// Per-workspace review settings. Credentials never enter approval parameters or audit payloads.
+model ReviewProvider {
+  tenantId          String  @db.Uuid
+  provider          String
+  model             String
+  secretCiphertext  String?
+  enabled           Boolean @default(true)
+  dailyRequestLimit Int     @default(20)
+  maxOutputTokens   Int     @default(2048)
+  timeoutMs         Int     @default(10000)
+  tenant            Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, provider])
+}

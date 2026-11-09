@@ -1,0 +1,7 @@
+overrides:
+  # Patch both transitive major lines without moving consumers across a major boundary.
+  "fast-uri@>=3.0.0 <3.1.9": "^3.1.9"
+  "fast-uri@>=4.0.0 <4.2.3": "^4.2.3"
+  deepmerge-ts@<8.0.0: ">=8.0.0"
+  mysql2@<3.22.0: ">=3.22.0"
+  mysql2@<=3.23.0: ">=3.23.1"

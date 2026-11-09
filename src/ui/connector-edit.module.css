@@ -1,0 +1,60 @@
+.connectorEdit {
+  max-width: 720px;
+  padding: 24px;
+}
+.connectorEdit .field {
+  margin-bottom: 20px;
+}
+.connectorEdit input,
+.connectorEdit select {
+  min-height: 40px;
+}
+.connectorEdit textarea {
+  width: 100%;
+  resize: vertical;
+}
+.connectorEdit input[type="checkbox"] {
+  min-height: auto;
+  width: auto;
+}
+.connectorEdit .help {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 7px 0 0;
+  color: var(--muted);
+}
+.connectorEdit .editFoot {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 20px;
+}
+.connectorEdit .editFoot p {
+  font-size: 12px;
+  margin: 0 0 14px;
+}
+.connectorEdit .editActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.connectorEdit .editActions .primary {
+  min-height: 38px;
+  padding: 9px 16px;
+}
+.connectorEdit .editActions a {
+  padding: 8px 0;
+  font-size: 13px;
+}
+@media (max-width: 480px) {
+  .connectorEdit {
+    padding: 18px;
+  }
+  .connectorEdit .editActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .connectorEdit .editActions a {
+    text-align: center;
+  }
+}
