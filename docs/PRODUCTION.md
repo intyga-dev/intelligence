@@ -152,8 +152,10 @@ Everything here happens in the console, and every activation is a passkey-signed
   For sources Intelligence has no connector for, see [CONNECTORS.md](CONNECTORS.md).
 - **Detectors:** ten are available. CI, merge-policy, overdue-job and service-objective monitoring
   need explicit targets in **Operational settings** before they can find anything. Collection
-  health applies to active polling sources. The code-change path map is per GitHub/GitLab connector;
-  path-only matches appear as **Observations** and do not trigger alerts. See the [detector guide](../README.md#deterministic-detectors).
+  health applies to active polling sources. GitHub and GitLab connectors use the built-in sensitive-path
+  map; path-only matches appear as **Observations** and do not trigger alerts. See the
+  [detector reference](../README.md#deterministic-detectors), and [DETECTORS.md](DETECTORS.md) to add
+  your own rules or paths.
 - **Alerts:** create a rule, point it at a webhook or a Slack incoming webhook, then **Turn on**. It
   starts from now and never replays history. Verify webhook signatures as described in the README.
 

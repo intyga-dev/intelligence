@@ -394,9 +394,9 @@ A connector only produces events. To have them raise findings, either:
 
 - emit a kind a detector already reads, prefixed with your own source name. That usually means
   asking for the detector to accept it, as `deploy-regression` does for `custom.error`; or
-- add a detector: a pure function in `src/domain/detectors/`, an entry in
-  `src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. The existing detectors are small
-  and each is commented with what it does and does not claim.
+- add a detector. [DETECTORS.md](DETECTORS.md) walks through one end to end, from the event kinds
+  it reads to its tests and registration. The existing detectors are small and each is commented
+  with what it does and does not claim.
 
 A pull request adding a connector for a common service is welcome. Open an issue first if it needs
 anything beyond the one file, its tests and its registration line.
