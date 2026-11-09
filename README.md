@@ -285,9 +285,9 @@ exception: it is a review finding, not proof of misconduct.
 The merge detector uses [GitHub's historical rule-suite API](https://docs.github.com/en/rest/repos/rule-suites).
 The service detector follows the [multiwindow burn-rate approach](https://sre.google/workbook/alerting-on-slos/).
 
-Adding a detector: a pure function in `src/domain/detectors/`, an entry in
-`src/domain/detectors/index.ts`, and a call in `src/jobs/tick.ts`. Failures are isolated per
-detector, so a new one cannot take the working ones down with it.
+To add your own rule, follow [docs/DETECTORS.md](docs/DETECTORS.md): a worked example from the
+events to the tests and registration. Failures are isolated per detector, so a new one cannot take
+the working ones down with it.
 
 ---
 

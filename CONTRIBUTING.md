@@ -72,7 +72,8 @@ a parsed body verifies only by luck.
 
 **New detectors** live in `src/domain/detectors/`, take their window as a parameter, and return
 findings with deterministic evidence first. Register in `src/jobs/tick.ts`. Detector failures are
-isolated, so yours cannot take the others down — do not rely on that.
+isolated, so yours cannot take the others down — do not rely on that. [docs/DETECTORS.md](docs/DETECTORS.md)
+walks through a complete example, including every place a detector is registered.
 
 **Schema changes** need a migration in `prisma/migrations/`. Read the header of
 `prisma/schema.prisma` first, particularly about what `tenantId` is and is not.
