@@ -86,8 +86,8 @@ flowchart LR
   type EvidenceList = readonly [DeterministicEvidence, ...Evidence[]]
   ```
 
-  Model judgment is optional, off by default, and can only calibrate severity or filter expected
-  behaviour. It can never be the reason a finding exists.
+  AI review is optional, off by default and advisory: it never creates a finding or changes its
+  severity, status or alerts.
 - **Sign in with an application passkey.** Active INTYGA workspace membership supplies the person
   and role. Application passkeys sign inside Intelligence; private keys stay in the authenticator.
   Optional OIDC uses PKCE. Sessions are opaque, server-side and revocable, with HttpOnly cookies.
@@ -200,7 +200,7 @@ Python, a GitHub Actions snippet, and the rules a connector has to follow.
 
 Ten detectors ship. Each is a pure function over stored events, runs on every detection tick, and
 can be switched off on `/detectors`. Switching one off is a passkey-signed action. The severity and
-the reason a finding exists are always computed; the optional model can only adjust them afterwards.
+the reason a finding exists are always computed; an optional AI review is shown beside them and changes neither.
 
 - **`denial-burst`** — a subject refused far more than it usually is, judged against its own
   history, plus any action type it has never attempted before. _Needs:_ the INTYGA connector.
@@ -302,8 +302,8 @@ and [`.env.production.example`](.env.production.example)._
 - **Node.js** `v26+` and **pnpm** `v10+`
 - **Docker & Docker Compose** (for PostgreSQL)
 - **An INTYGA workspace** with a SERVICE key and trust anchor (OIDC is optional) — see
-  [Read this first](#read-this-first). INTYGA Cloud (`app.intyga.com`) is not generally available
-  yet; during preview, bind against a staging or self-hosted gateway.
+  [Read this first](#read-this-first). On INTYGA Cloud the gateway is `https://api.intyga.com` and
+  the console is `https://app.intyga.com`.
 
 ### 1. Clone and configure
 
@@ -338,7 +338,8 @@ must run with `EMBEDDED_ALLOW_LOCALHOST=true` in development.
 
 ### 4. Configure the connection
 
-Set these in your private `.env` (use the gateway and console you operate):
+Set these in your private `.env`. The URLs below suit a local INTYGA development stack; for INTYGA
+Cloud use the values in [`.env.production.example`](.env.production.example):
 
 ```dotenv
 PUBLIC_URL=http://localhost:4100

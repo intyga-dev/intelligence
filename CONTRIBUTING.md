@@ -18,8 +18,8 @@ conversation to have in the issue, not a line to add to the allowlist in the sam
 **2. Evidence leads; a model never does.**
 
 `EvidenceList` is `readonly [DeterministicEvidence, ...Evidence[]]` on purpose. A finding exists
-because something measurable happened. The optional judgment layer may reorder, downgrade or
-suppress; it may never be the reason a finding was raised. A change that lets a model originate a
+because something measurable happened. The optional AI review is advisory: it may not change a
+finding's severity, status or alerts, and it may never be the reason a finding was raised. A change that lets a model originate a
 finding is a change to what this product is.
 
 ## Before you open a pull request

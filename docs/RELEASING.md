@@ -47,7 +47,7 @@ account is configured correctly or that a live passkey ceremony works on every t
    `SECRETS_ENC_KEY`; replacing it makes stored secrets unreadable.
 2. Record the current image/commit and confirm the backup can be restored. Deploy the required
    INTYGA gateway capabilities before creating new embedded approval requests.
-3. Select the reviewed Intelligence release commit. Once published, `v1.0.0` identifies that commit.
+3. Select the reviewed Intelligence release commit. The published `1.0.0` tag identifies that commit.
    Use the build, stop, migrate and restart sequence in [SELF_HOST.md](SELF_HOST.md#operate-and-upgrade).
 4. Refresh the application trust anchor if passkeys changed. Sign in, make an intended protected
    change, and confirm both receipt verification and successful application of the change.
@@ -70,7 +70,7 @@ image-only downgrade is safe.
 ## Publish
 
 After the reviewed commit passes CI and staging checks, merge it into `main`, create an immutable
-`v1.0.0` tag at that exact commit, and publish GitHub release notes from the changelog. Record the
+`1.0.0` tag at that exact commit, and publish GitHub release notes from the changelog. Record the
 commit and image digest used for deployment. Do not run `npm publish` for this private application.
 
 Updating the version files prepares the release; it does not create the tag, publish a GitHub
